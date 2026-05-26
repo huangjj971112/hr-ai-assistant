@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: hr-gateway
+
+server:
+  port: ${GATEWAY_PORT:8090}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+app:
+  gateway:
+    backend-base-url: ${BACKEND_BASE_URL:http://localhost:8091}
+    jwt-secret: ${JWT_SECRET:hr-ai-assistant-demo-secret-change-me-32}

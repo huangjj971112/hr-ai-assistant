@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: hr-ai-assistant
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/hr_ai_assistant}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+
+  sql:
+    init:
+      mode: always
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
+server:
+  port: ${SERVER_PORT:8091}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+app:
+  ai:
+    provider: ${AI_PROVIDER:openai}
+    model: ${AI_MODEL:gpt-4o-mini}
+  dify:
+    enabled: ${DIFY_ENABLED:false}
+    base-url: ${DIFY_BASE_URL:https://api.dify.ai/v1}
+    api-key: ${DIFY_API_KEY:}
+    timeout-seconds: ${DIFY_TIMEOUT_SECONDS:60}
+  security:
+    jwt-secret: ${JWT_SECRET:hr-ai-assistant-demo-secret-change-me-32}
+    jwt-expiration-seconds: ${JWT_EXPIRATION_SECONDS:7200}
