@@ -35,6 +35,13 @@ management:
       probes:
         enabled: true
 
+dify:
+  enabled: ${DIFY_ENABLED:false}
+  base-url: ${DIFY_BASE_URL:https://api.dify.ai/v1}
+  api-key: ${DIFY_API_KEY:}
+  workflow-path: ${DIFY_WORKFLOW_PATH:/workflows/run}
+  timeout-seconds: ${DIFY_TIMEOUT_SECONDS:60}
+
 app:
   ai:
     provider: ${AI_PROVIDER:openai}
@@ -47,3 +54,7 @@ app:
   security:
     jwt-secret: ${JWT_SECRET:hr-ai-assistant-demo-secret-change-me-32}
     jwt-expiration-seconds: ${JWT_EXPIRATION_SECONDS:7200}
+
+logging:
+  level:
+    org.springframework.jdbc: DEBUG

@@ -373,6 +373,109 @@ class HrAiAssistantApplicationTests {
         assertThat(response.getBody()).contains("mock-employee-handbook");
     }
 
+    @Test
+    void shouldCallDifyWorkflowChatWithMockFallback() {
+        String request = """
+                {
+                  "message": "帮我查一下我的年假余额"
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/dify/workflow/chat"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody()).contains("\"source\":\"mock-dify-workflow\"");
+        assertThat(response.getBody()).contains("帮我查一下我的年假余额");
+    }
+
+    @Test
+    void shouldCallLeaveBalanceToolForCurrentEmployee() {
+        String request = """
+                {
+                  "employeeName": "张三"
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/tools/leave/balance"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody()).contains("\"employeeName\":\"张三\"");
+        assertThat(response.getBody()).contains("\"annualLeaveBalance\":5");
+    }
+
+    @Test
+    void shouldAllowHrCallingLeaveBalanceToolForOtherEmployee() {
+        String request = """
+                {
+                  "employeeName": "李四"
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/tools/leave/balance"),
+                HttpMethod.POST,
+                authJsonEntity(request, hrToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody()).contains("\"employeeName\":\"李四\"");
+        assertThat(response.getBody()).contains("\"annualLeaveBalance\":8");
+    }
+
+    @Test
+    void shouldRejectEmployeeCallingLeaveBalanceToolForOtherEmployee() {
+        String request = """
+                {
+                  "employeeName": "李四"
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/tools/leave/balance"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        assertThat(response.getBody()).contains("\"code\":\"FORBIDDEN\"");
+        assertThat(response.getBody()).contains("员工只能查询或操作自己的请假信息");
+    }
+
+    @Test
+    void shouldCallLeaveRecordsToolForCurrentEmployee() {
+        String request = """
+                {
+                  "employeeName": "张三",
+                  "year": 2026,
+                  "leaveType": "ANNUAL"
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/tools/leave/records"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody()).contains("\"applyNo\":\"LV202601100001\"");
+        assertThat(response.getBody()).contains("\"applyNo\":\"LV202603180001\"");
+        assertThat(response.getBody()).doesNotContain("\"employeeName\":\"李四\"");
+    }
+
     private String url(String path) {
         return "http://localhost:" + port + path;
     }

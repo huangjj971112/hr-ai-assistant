@@ -209,6 +209,89 @@ export DIFY_BASE_URL=http://localhost/v1
 
 未配置 `DIFY_API_KEY` 时，接口会返回 mock 提示，不影响本地启动和测试。
 
+## Dify Workflow + HR Tool Calling Demo
+
+本 Demo 新增了企业系统 Tool Calling 调用链：
+
+```text
+hr-web
+-> hr-gateway
+-> hr-service
+-> Dify Workflow
+-> Dify HTTP 节点回调 hr-service Tool API
+-> hr-service 内部调用 LeaveTools / 业务 Service
+-> Tool JSON 返回 Dify
+-> Dify 组织自然语言 answer
+-> hr-service 返回前端
+```
+
+前端不要直接调用 Dify。Dify 也不直接访问数据库，只能调用 `hr-service` 暴露的 Tool API。Tool API 会重新做 JWT 用户识别和权限校验，普通员工只能查自己，HR 可以查指定员工。
+
+### Workflow 配置
+
+启动 `hr-service` 时可配置：
+
+```bash
+export DIFY_ENABLED=true
+export DIFY_API_KEY=app-your-dify-workflow-api-key
+export DIFY_BASE_URL=https://api.dify.ai/v1
+export DIFY_WORKFLOW_PATH=/workflows/run
+mvn -pl hr-service spring-boot:run
+```
+
+`application.yml` 中对应配置：
+
+```yaml
+dify:
+  enabled: ${DIFY_ENABLED:false}
+  base-url: ${DIFY_BASE_URL:https://api.dify.ai/v1}
+  api-key: ${DIFY_API_KEY:}
+  workflow-path: ${DIFY_WORKFLOW_PATH:/workflows/run}
+  timeout-seconds: ${DIFY_TIMEOUT_SECONDS:60}
+```
+
+未配置 `DIFY_API_KEY` 时，`/api/ai/dify/workflow/chat` 会返回 mock answer，保证本地演示可以直接跑通。
+
+### Dify Workflow 节点建议
+
+```text
+1. Start：接收 message、userId、username、employeeName、role、tenantId、token
+2. LLM：识别是否是查询年假余额
+3. IF/ELSE：判断意图
+4. HTTP：调用 /api/ai/tools/leave/balance
+5. LLM：根据 Tool 返回 JSON 组织自然语言
+6. End：输出 answer
+```
+
+HTTP 节点示例，走网关：
+
+```text
+POST http://localhost:8090/api/ai/tools/leave/balance
+```
+
+Headers:
+
+```text
+Authorization: Bearer {{token}}
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{
+  "employeeName": "{{employeeName}}"
+}
+```
+
+本地开发也可以让 Dify 直接调业务服务：
+
+```text
+POST http://localhost:8091/api/ai/tools/leave/balance
+```
+
+区别是：走 `8090` 会经过 Gateway 的统一鉴权和请求头透传；直接调 `8091` 则由 `hr-service` 自己解析 `Authorization` 里的 JWT。推荐演示企业架构时走 Gateway。
+
 ## 接口示例
 
 ### 0. 登录获取 Token
@@ -406,20 +489,103 @@ curl -X POST "http://localhost:8090/api/employee/handbook/ask" \
 
 已配置 Dify 时会调用 Dify `/chat-messages`，未配置时返回 mock 提示。
 
+流式输出接口：
+
+```bash
+curl -N -X POST "http://localhost:8090/api/employee/handbook/ask/stream" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -H "Authorization: Bearer <EMPLOYEE_TOKEN>" \
+  -d '{
+    "question": "员工年假制度是什么？"
+  }'
+```
+
+### 11. Dify Workflow AI 入口
+
+```bash
+curl -X POST "http://localhost:8090/api/ai/dify/workflow/chat" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <EMPLOYEE_TOKEN>" \
+  -d '{
+    "message": "帮我查一下我的年假余额"
+  }'
+```
+
+未配置 Dify 时返回：
+
+```json
+{
+  "answer": "Dify Workflow 未启用，当前返回本地 mock...",
+  "source": "mock-dify-workflow",
+  "raw": {
+    "inputs": {}
+  }
+}
+```
+
+### 12. Dify HTTP 节点 Tool API
+
+查询年假余额：
+
+```bash
+curl -X POST "http://localhost:8090/api/ai/tools/leave/balance" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <EMPLOYEE_TOKEN>" \
+  -d '{
+    "employeeName": "张三"
+  }'
+```
+
+查询请假记录：
+
+```bash
+curl -X POST "http://localhost:8090/api/ai/tools/leave/records" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <EMPLOYEE_TOKEN>" \
+  -d '{
+    "employeeName": "张三",
+    "year": 2026,
+    "leaveType": "ANNUAL"
+  }'
+```
+
+HR 查询其他员工：
+
+```bash
+curl -X POST "http://localhost:8090/api/ai/tools/leave/balance" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <HR_TOKEN>" \
+  -d '{
+    "employeeName": "李四"
+  }'
+```
+
+普通员工越权查询其他员工会返回：
+
+```json
+{
+  "success": false,
+  "code": "FORBIDDEN",
+  "message": "员工只能查询或操作自己的请假信息",
+  "data": null
+}
+```
+
 ## 测试
 
 ```bash
 mvn test
 ```
 
-当前测试覆盖 Spring 上下文启动、HR 业务接口、AI 对话入口和请假 Workflow。
+当前测试覆盖 Spring 上下文启动、HR 业务接口、AI 对话入口、请假 Workflow、Dify 员工手册问答、Dify Workflow mock 分支和 Tool API 权限控制。
 
 ## 后续扩展方向
 
 - 引入 Flyway/Liquibase 替代 `schema.sql`，管理表结构和初始化数据。
 - 用 Spring AI `ChatClient` 替换规则式意图识别。
 - 在 `LeaveTools`、`CandidateTools` 等工具类上接入 Spring AI Tool Calling 注解。
-- 将员工手册问答从 Dify blocking 模式扩展为 SSE 流式输出。
+- 将 Dify Workflow 调用从 blocking 模式扩展为 SSE 流式输出。
 - 为 HR 制度文档增加切片、Embedding、向量检索和 RAG 回答链路。
 - 增加 SSE 流式输出接口，例如 `/api/ai/chat/stream`。
 - 增加鉴权、租户隔离、审计日志和操作追踪。

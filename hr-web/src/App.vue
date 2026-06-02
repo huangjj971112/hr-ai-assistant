@@ -57,12 +57,19 @@ type KnowledgeAnswer = {
   conversationId?: string | null;
 };
 
+type DifyWorkflowAnswer = {
+  answer: string;
+  source: string;
+  raw?: unknown;
+};
+
 const apiBase = '/api';
 const loading = ref(false);
 const error = ref('');
 const chatError = ref('');
 const workflowError = ref('');
 const handbookError = ref('');
+const difyWorkflowError = ref('');
 const handbookStreaming = ref(false);
 const session = ref<LoginResponse | null>(loadSession());
 
@@ -71,6 +78,7 @@ const password = ref('123456');
 const hrEmployeeName = ref('张三');
 const candidateKeyword = ref('Java');
 const chatMessage = ref('帮我查询张三的年假余额');
+const difyWorkflowMessage = ref('帮我查一下我的年假余额');
 const workflowMessage = ref('我想明天下午请年假，原因是个人事务');
 const jdPosition = ref('高级 Java 开发工程师');
 const jdYears = ref(5);
@@ -85,6 +93,7 @@ const myLeaveApplications = ref<LeaveApplication[]>([]);
 const hrBalance = ref<LeaveBalance | null>(null);
 const candidates = ref<Candidate[]>([]);
 const chatResult = ref<unknown>(null);
+const difyWorkflowResult = ref<DifyWorkflowAnswer | null>(null);
 const workflowResult = ref<WorkflowResponse | null>(null);
 const jdResult = ref('');
 const handbookAnswer = ref<KnowledgeAnswer | null>(null);
@@ -207,6 +216,18 @@ async function chat() {
     });
   }, (message) => {
     chatError.value = message;
+  }, false);
+}
+
+async function runDifyWorkflowChat() {
+  difyWorkflowError.value = '';
+  await run(async () => {
+    difyWorkflowResult.value = await request<DifyWorkflowAnswer>('/ai/dify/workflow/chat', {
+      method: 'POST',
+      body: { message: difyWorkflowMessage.value }
+    });
+  }, (message) => {
+    difyWorkflowError.value = message;
   }, false);
 }
 
@@ -393,6 +414,8 @@ function clearResults() {
   candidates.value = [];
   chatResult.value = null;
   chatError.value = '';
+  difyWorkflowResult.value = null;
+  difyWorkflowError.value = '';
   workflowResult.value = null;
   workflowError.value = '';
   jdResult.value = '';
@@ -440,6 +463,7 @@ function isAiChatResponse(value: unknown): value is { intent: string; reply: str
         <a href="#handbook" :class="{ disabled: !isEmployee && !isHr }">员工手册</a>
         <a v-if="isHr" href="#hr">HR 工作台</a>
         <a href="#ai">AI 助手</a>
+        <a href="#dify-workflow">Dify Workflow</a>
         <a href="#workflow">Workflow</a>
       </nav>
     </aside>
@@ -676,6 +700,24 @@ function isAiChatResponse(value: unknown): value is { intent: string; reply: str
             </div>
           </div>
           <pre v-if="chatResult">{{ pretty(chatResult) }}</pre>
+        </section>
+
+        <section id="dify-workflow" class="panel">
+          <div class="panel-header">
+            <div>
+              <h3>Dify Workflow AI</h3>
+              <p>Dify 编排意图，HTTP 节点回调 HR Tool API。</p>
+            </div>
+            <button @click="runDifyWorkflowChat">运行</button>
+          </div>
+          <textarea v-model="difyWorkflowMessage" rows="3"></textarea>
+          <div v-if="difyWorkflowError" class="inline-alert">{{ difyWorkflowError }}</div>
+          <div v-if="difyWorkflowResult" class="answer-box">
+            <strong>回答</strong>
+            <p>{{ difyWorkflowResult.answer }}</p>
+            <small>{{ difyWorkflowResult.source }}</small>
+          </div>
+          <pre v-if="difyWorkflowResult?.raw">{{ pretty(difyWorkflowResult.raw) }}</pre>
         </section>
 
         <section id="workflow" class="panel">
