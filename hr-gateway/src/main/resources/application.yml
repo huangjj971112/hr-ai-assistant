@@ -4,6 +4,7 @@ spring:
 
 server:
   port: ${GATEWAY_PORT:8090}
+  address: 0.0.0.0
 
 management:
   endpoints:

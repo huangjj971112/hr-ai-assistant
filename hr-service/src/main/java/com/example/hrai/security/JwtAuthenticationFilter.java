@@ -1,5 +1,6 @@
 package com.example.hrai.security;
 
+import com.example.hrai.exception.BusinessException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -26,13 +27,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         String authorization = request.getHeader(HttpHeaders.AUTHORIZATION);
         if (authorization != null && authorization.startsWith("Bearer ")) {
-            AuthenticatedUser user = jwtTokenService.parseToken(authorization.substring(7));
-            UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-                    user,
-                    null,
-                    List.of(new SimpleGrantedAuthority("ROLE_" + user.role().name()))
-            );
-            SecurityContextHolder.getContext().setAuthentication(authentication);
+            try {
+                AuthenticatedUser user = jwtTokenService.parseToken(authorization.substring(7));
+                UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                        user,
+                        null,
+                        List.of(new SimpleGrantedAuthority("ROLE_" + user.role().name()))
+                );
+                SecurityContextHolder.getContext().setAuthentication(authentication);
+            } catch (BusinessException exception) {
+                if (!request.getRequestURI().startsWith("/api/ai/tools/")) {
+                    throw exception;
+                }
+            }
         }
         filterChain.doFilter(request, response);
     }

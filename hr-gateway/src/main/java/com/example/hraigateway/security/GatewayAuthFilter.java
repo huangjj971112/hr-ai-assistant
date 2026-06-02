@@ -49,7 +49,9 @@ public class GatewayAuthFilter extends OncePerRequestFilter {
     }
 
     private boolean isPublicPath(String path) {
-        return path.startsWith("/api/auth/") || path.equals("/actuator/health");
+        return path.startsWith("/api/auth/")
+                || path.startsWith("/api/ai/tools/")
+                || path.equals("/actuator/health");
     }
 
     private GatewayUser parseUser(HttpServletRequest request, HttpServletResponse response) throws IOException {

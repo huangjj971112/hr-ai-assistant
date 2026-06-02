@@ -60,7 +60,13 @@ type KnowledgeAnswer = {
 type DifyWorkflowAnswer = {
   answer: string;
   source: string;
-  raw?: unknown;
+};
+
+type AssistantMessage = {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  source?: string;
 };
 
 const apiBase = '/api';
@@ -71,6 +77,7 @@ const workflowError = ref('');
 const handbookError = ref('');
 const difyWorkflowError = ref('');
 const handbookStreaming = ref(false);
+const difyWorkflowSending = ref(false);
 const session = ref<LoginResponse | null>(loadSession());
 
 const username = ref('zhangsan');
@@ -94,6 +101,13 @@ const hrBalance = ref<LeaveBalance | null>(null);
 const candidates = ref<Candidate[]>([]);
 const chatResult = ref<unknown>(null);
 const difyWorkflowResult = ref<DifyWorkflowAnswer | null>(null);
+const difyWorkflowMessages = ref<AssistantMessage[]>([
+  {
+    id: Date.now(),
+    role: 'assistant',
+    content: '你好，我可以帮你查询假期余额。'
+  }
+]);
 const workflowResult = ref<WorkflowResponse | null>(null);
 const jdResult = ref('');
 const handbookAnswer = ref<KnowledgeAnswer | null>(null);
@@ -220,15 +234,44 @@ async function chat() {
 }
 
 async function runDifyWorkflowChat() {
+  const message = difyWorkflowMessage.value.trim();
+  if (!message || difyWorkflowSending.value) {
+    return;
+  }
+
   difyWorkflowError.value = '';
+  difyWorkflowSending.value = true;
+  difyWorkflowMessages.value.push({
+    id: Date.now(),
+    role: 'user',
+    content: message
+  });
+  difyWorkflowMessage.value = '';
+
   await run(async () => {
     difyWorkflowResult.value = await request<DifyWorkflowAnswer>('/ai/dify/workflow/chat', {
       method: 'POST',
-      body: { message: difyWorkflowMessage.value }
+      body: { message }
+    });
+    difyWorkflowMessages.value.push({
+      id: Date.now() + 1,
+      role: 'assistant',
+      content: difyWorkflowResult.value.answer,
+      source: difyWorkflowResult.value.source
     });
   }, (message) => {
     difyWorkflowError.value = message;
+    difyWorkflowMessages.value.push({
+      id: Date.now() + 2,
+      role: 'assistant',
+      content: `流程调用失败：${message}`
+    });
   }, false);
+  difyWorkflowSending.value = false;
+}
+
+function useDifyWorkflowPrompt(message: string) {
+  difyWorkflowMessage.value = message;
 }
 
 async function runWorkflow() {
@@ -416,6 +459,14 @@ function clearResults() {
   chatError.value = '';
   difyWorkflowResult.value = null;
   difyWorkflowError.value = '';
+  difyWorkflowSending.value = false;
+  difyWorkflowMessages.value = [
+    {
+      id: Date.now(),
+      role: 'assistant',
+      content: '你好，我可以帮你查询假期余额。'
+    }
+  ];
   workflowResult.value = null;
   workflowError.value = '';
   jdResult.value = '';
@@ -705,19 +756,46 @@ function isAiChatResponse(value: unknown): value is { intent: string; reply: str
         <section id="dify-workflow" class="panel">
           <div class="panel-header">
             <div>
-              <h3>Dify Workflow AI</h3>
-              <p>Dify 编排意图，HTTP 节点回调 HR Tool API。</p>
+              <h3>员工 AI 助手</h3>
+              <p>前端提问，后端调用 Dify 单流程，再由流程回调 HR Tool API。</p>
             </div>
-            <button @click="runDifyWorkflowChat">运行</button>
+            <button @click="runDifyWorkflowChat" :disabled="difyWorkflowSending || !difyWorkflowMessage.trim()">
+              {{ difyWorkflowSending ? '发送中' : '发送' }}
+            </button>
           </div>
-          <textarea v-model="difyWorkflowMessage" rows="3"></textarea>
+
+          <div class="assistant-shell">
+            <div class="quick-prompts" aria-label="快捷问题">
+              <button class="secondary" @click="useDifyWorkflowPrompt('帮我查一下我的年假余额')">查年假余额</button>
+              <button class="secondary" @click="useDifyWorkflowPrompt('我的病假还剩多少天')">查病假余额</button>
+            </div>
+
+            <div class="assistant-thread" aria-live="polite">
+              <div
+                v-for="message in difyWorkflowMessages"
+                :key="message.id"
+                class="assistant-message"
+                :class="message.role"
+              >
+                <strong>{{ message.role === 'user' ? session.employeeName : 'AI 助手' }}</strong>
+                <p>{{ message.content }}</p>
+                <small v-if="message.source">{{ message.source }}</small>
+              </div>
+            </div>
+
+            <form class="assistant-composer" @submit.prevent="runDifyWorkflowChat">
+              <textarea
+                v-model="difyWorkflowMessage"
+                rows="2"
+                placeholder="例如：帮我查一下我的年假余额"
+              ></textarea>
+              <button type="submit" :disabled="difyWorkflowSending || !difyWorkflowMessage.trim()">
+                {{ difyWorkflowSending ? '发送中' : '发送' }}
+              </button>
+            </form>
+          </div>
+
           <div v-if="difyWorkflowError" class="inline-alert">{{ difyWorkflowError }}</div>
-          <div v-if="difyWorkflowResult" class="answer-box">
-            <strong>回答</strong>
-            <p>{{ difyWorkflowResult.answer }}</p>
-            <small>{{ difyWorkflowResult.source }}</small>
-          </div>
-          <pre v-if="difyWorkflowResult?.raw">{{ pretty(difyWorkflowResult.raw) }}</pre>
         </section>
 
         <section id="workflow" class="panel">

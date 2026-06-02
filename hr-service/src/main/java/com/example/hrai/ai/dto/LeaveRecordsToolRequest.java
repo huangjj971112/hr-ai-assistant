@@ -10,4 +10,6 @@ public class LeaveRecordsToolRequest {
     private Integer year;
 
     private String leaveType;
+
+    private String toolToken;
 }
