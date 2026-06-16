@@ -50,10 +50,7 @@ public class LeaveService {
     }
 
     public LeaveApplyResponse apply(LeaveApplyRequest request) {
-        if (!request.getEndTime().isAfter(request.getStartTime())) {
-            throw new BusinessException("INVALID_LEAVE_TIME", "请假结束时间必须晚于开始时间");
-        }
-        findBalance(request.getEmployeeName());
+        validateApply(request);
 
         LeaveApplication application = new LeaveApplication();
         application.setApplyNo(generateApplyNo(request.getStartTime().toLocalDate()));
@@ -66,7 +63,21 @@ public class LeaveService {
         application.setCreatedAt(LocalDateTime.now());
         leaveApplicationRepository.insert(application);
 
-        return new LeaveApplyResponse(application.getApplyNo(), application.getStatus().name(), "请假申请已提交");
+        return new LeaveApplyResponse(application.getApplyNo(), application.getStatus().name(), "请假申请已提交，等待审批");
+    }
+
+    public void validateApply(LeaveApplyRequest request) {
+        if (request.getLeaveType() == null
+                || request.getStartTime() == null
+                || request.getEndTime() == null
+                || request.getReason() == null
+                || request.getReason().isBlank()) {
+            throw new BusinessException("INVALID_LEAVE_APPLY_PARAMS", "请假类型、开始时间、结束时间和原因不能为空");
+        }
+        if (!request.getEndTime().isAfter(request.getStartTime())) {
+            throw new BusinessException("INVALID_LEAVE_TIME", "请假结束时间必须晚于开始时间");
+        }
+        findBalance(request.getEmployeeName());
     }
 
     public List<LeaveApplicationResponse> listApplications(String employeeName, Integer year, LeaveType leaveType) {
@@ -101,10 +112,34 @@ public class LeaveService {
     }
 
     private String generateApplyNo(LocalDate date) {
+        String prefix = "LV" + date.format(DATE_FORMATTER);
         int sequence = dailyApplySequences
-                .computeIfAbsent(date, ignored -> new AtomicInteger(0))
+                .computeIfAbsent(date, ignored -> new AtomicInteger(findMaxApplySequence(prefix)))
                 .incrementAndGet();
-        return "LV" + date.format(DATE_FORMATTER) + String.format("%04d", sequence);
+        return prefix + String.format("%04d", sequence);
+    }
+
+    private int findMaxApplySequence(String prefix) {
+        return leaveApplicationRepository.selectList(
+                        new LambdaQueryWrapper<LeaveApplication>()
+                                .select(LeaveApplication::getApplyNo)
+                                .likeRight(LeaveApplication::getApplyNo, prefix)
+                ).stream()
+                .map(LeaveApplication::getApplyNo)
+                .map(applyNo -> parseApplySequence(applyNo, prefix))
+                .max(Integer::compareTo)
+                .orElse(0);
+    }
+
+    private int parseApplySequence(String applyNo, String prefix) {
+        if (applyNo == null || !applyNo.startsWith(prefix)) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(applyNo.substring(prefix.length()));
+        } catch (NumberFormatException exception) {
+            return 0;
+        }
     }
 
     private LeaveApplicationResponse toApplicationResponse(LeaveApplication application) {

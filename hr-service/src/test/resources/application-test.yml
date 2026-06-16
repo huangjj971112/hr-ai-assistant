@@ -8,3 +8,11 @@ spring:
   sql:
     init:
       mode: always
+
+app:
+  ai:
+    provider: test
+    model: test
+    agent-memory:
+      store: in-memory
+      pending-leave-ttl: 20m

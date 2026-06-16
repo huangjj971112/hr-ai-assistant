@@ -19,6 +19,6 @@ public class AiChatController {
 
     @PostMapping("/chat")
     public AiChatResponse chat(@Valid @RequestBody AiChatRequest request) {
-        return aiChatService.chat(request.getMessage());
+        return aiChatService.chat(request.getMessage(), request.getSessionId());
     }
 }

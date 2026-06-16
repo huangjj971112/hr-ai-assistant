@@ -8,4 +8,6 @@ public class DifyWorkflowChatRequest {
 
     @NotBlank
     private String message;
+
+    private AiAssistantType agentType = AiAssistantType.WORKFLOW;
 }

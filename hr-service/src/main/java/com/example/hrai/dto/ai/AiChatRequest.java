@@ -8,4 +8,6 @@ public class AiChatRequest {
 
     @NotBlank
     private String message;
+
+    private String sessionId;
 }

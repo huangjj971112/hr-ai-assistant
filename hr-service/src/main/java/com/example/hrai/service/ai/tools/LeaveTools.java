@@ -35,4 +35,12 @@ public class LeaveTools {
         request.setReason("AI 对话入口模拟提交");
         return leaveService.apply(request);
     }
+
+    public LeaveApplyResponse applyLeave(LeaveApplyRequest request) {
+        return leaveService.apply(request);
+    }
+
+    public void validateLeaveApply(LeaveApplyRequest request) {
+        leaveService.validateApply(request);
+    }
 }

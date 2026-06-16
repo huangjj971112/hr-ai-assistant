@@ -1,6 +1,8 @@
 package com.example.hrai.config;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.example.hrai.entity.AttendanceRecord;
+import com.example.hrai.entity.AttendanceStatus;
 import com.example.hrai.entity.Candidate;
 import com.example.hrai.entity.EmployeeLeaveBalance;
 import com.example.hrai.entity.LeaveApplication;
@@ -9,6 +11,7 @@ import com.example.hrai.entity.LeaveType;
 import com.example.hrai.entity.UserAccount;
 import com.example.hrai.entity.UserRole;
 import com.example.hrai.repository.CandidateRepository;
+import com.example.hrai.repository.AttendanceRecordRepository;
 import com.example.hrai.repository.EmployeeLeaveBalanceRepository;
 import com.example.hrai.repository.LeaveApplicationRepository;
 import com.example.hrai.repository.UserAccountRepository;
@@ -19,6 +22,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.List;
 
 @Component
@@ -27,6 +32,7 @@ public class DemoDataInitializer implements CommandLineRunner {
 
     private final EmployeeLeaveBalanceRepository employeeLeaveBalanceRepository;
     private final LeaveApplicationRepository leaveApplicationRepository;
+    private final AttendanceRecordRepository attendanceRecordRepository;
     private final CandidateRepository candidateRepository;
     private final UserAccountRepository userAccountRepository;
     private final PasswordEncoder passwordEncoder;
@@ -36,8 +42,25 @@ public class DemoDataInitializer implements CommandLineRunner {
     public void run(String... args) {
         initLeaveBalances();
         initLeaveApplications();
+        initAttendanceRecords();
         initCandidates();
         initUsers();
+    }
+
+    private void initAttendanceRecords() {
+        if (attendanceRecordRepository.selectCount(new LambdaQueryWrapper<>()) > 0) {
+            return;
+        }
+        List.of(
+                new AttendanceRecord(null, "张三", LocalDate.of(2026, 6, 3),
+                        LocalTime.of(8, 55), LocalTime.of(18, 5), AttendanceStatus.NORMAL, "正常出勤"),
+                new AttendanceRecord(null, "张三", LocalDate.of(2026, 6, 4),
+                        LocalTime.of(9, 18), LocalTime.of(18, 2), AttendanceStatus.LATE, "迟到 18 分钟"),
+                new AttendanceRecord(null, "张三", LocalDate.of(2026, 6, 5),
+                        LocalTime.of(8, 58), LocalTime.of(17, 20), AttendanceStatus.EARLY_LEAVE, "早退 40 分钟"),
+                new AttendanceRecord(null, "李四", LocalDate.of(2026, 6, 5),
+                        LocalTime.of(8, 50), LocalTime.of(18, 10), AttendanceStatus.NORMAL, "正常出勤")
+        ).forEach(attendanceRecordRepository::insert);
     }
 
     private void initLeaveApplications() {

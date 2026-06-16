@@ -57,9 +57,33 @@ type KnowledgeAnswer = {
   conversationId?: string | null;
 };
 
+type LeaveType = 'ANNUAL' | 'SICK' | 'PERSONAL';
+type AiAssistantType = 'WORKFLOW' | 'HR_AGENT';
+type EmployeeAgentMode = 'LOCAL' | 'MCP';
+
 type DifyWorkflowAnswer = {
   answer: string;
   source: string;
+  needConfirm?: boolean | null;
+  leaveType?: LeaveType | null;
+  startTime?: string | null;
+  endTime?: string | null;
+  reason?: string | null;
+  message?: string | null;
+};
+
+type LeaveConfirmation = {
+  leaveType: LeaveType;
+  startTime: string;
+  endTime: string;
+  reason: string;
+  message: string;
+};
+
+type LeaveApplyResponse = {
+  applyNo: string;
+  status: string;
+  message: string;
 };
 
 type AssistantMessage = {
@@ -67,6 +91,24 @@ type AssistantMessage = {
   role: 'user' | 'assistant';
   content: string;
   source?: string;
+};
+
+type AgentChatResponse = {
+  intent: string;
+  reply: string;
+  data: unknown;
+};
+
+type PendingLeaveApply = {
+  state: string;
+  employeeName: string;
+  leaveType: LeaveType;
+  startTime: string;
+  endTime: string;
+  reason: string;
+  confirmed: boolean;
+  createdAt: string;
+  expiresAt: string;
 };
 
 const apiBase = '/api';
@@ -78,6 +120,9 @@ const handbookError = ref('');
 const difyWorkflowError = ref('');
 const handbookStreaming = ref(false);
 const difyWorkflowSending = ref(false);
+const leaveConfirmSubmitting = ref(false);
+const leaveConfirmError = ref('');
+const aiChatSending = ref(false);
 const session = ref<LoginResponse | null>(loadSession());
 
 const username = ref('zhangsan');
@@ -85,7 +130,10 @@ const password = ref('123456');
 const hrEmployeeName = ref('张三');
 const candidateKeyword = ref('Java');
 const chatMessage = ref('帮我查询张三的年假余额');
+const employeeAgentMode = ref<EmployeeAgentMode>('LOCAL');
+const aiChatSessionId = crypto.randomUUID();
 const difyWorkflowMessage = ref('帮我查一下我的年假余额');
+const aiAssistantType = ref<AiAssistantType>('WORKFLOW');
 const workflowMessage = ref('我想明天下午请年假，原因是个人事务');
 const jdPosition = ref('高级 Java 开发工程师');
 const jdYears = ref(5);
@@ -100,12 +148,21 @@ const myLeaveApplications = ref<LeaveApplication[]>([]);
 const hrBalance = ref<LeaveBalance | null>(null);
 const candidates = ref<Candidate[]>([]);
 const chatResult = ref<unknown>(null);
+const aiChatPendingLeave = ref<LeaveConfirmation | null>(null);
+const aiChatMessages = ref<AssistantMessage[]>([
+  {
+    id: Date.now(),
+    role: 'assistant',
+    content: '你好，我可以帮你查询假期余额、考勤，并通过多轮确认申请请假。'
+  }
+]);
 const difyWorkflowResult = ref<DifyWorkflowAnswer | null>(null);
+const pendingLeaveConfirmation = ref<LeaveConfirmation | null>(null);
 const difyWorkflowMessages = ref<AssistantMessage[]>([
   {
     id: Date.now(),
     role: 'assistant',
-    content: '你好，我可以帮你查询假期余额。'
+    content: '你好，我可以帮你查询假期余额、请假记录和考勤记录。'
   }
 ]);
 const workflowResult = ref<WorkflowResponse | null>(null);
@@ -191,6 +248,18 @@ async function fetchMyLeaveApplications() {
   });
 }
 
+async function submitMyLeaveApplication(confirmation: LeaveConfirmation) {
+  return request<LeaveApplyResponse>('/employee/me/leave/apply', {
+    method: 'POST',
+    body: {
+      leaveType: confirmation.leaveType,
+      startTime: confirmation.startTime,
+      endTime: confirmation.endTime,
+      reason: confirmation.reason
+    }
+  });
+}
+
 async function fetchHrBalance() {
   await run(async () => {
     hrBalance.value = await request<LeaveBalance>(
@@ -221,16 +290,70 @@ async function generateJd() {
   });
 }
 
-async function chat() {
+async function chat(messageOverride?: string) {
+  const message = (messageOverride ?? chatMessage.value).trim();
+  if (!message || aiChatSending.value) {
+    return;
+  }
+
   chatError.value = '';
+  aiChatSending.value = true;
+  aiChatMessages.value.push({
+    id: Date.now(),
+    role: 'user',
+    content: message
+  });
+  chatMessage.value = '';
+
   await run(async () => {
-    chatResult.value = await request('/ai/chat', {
+    const chatPath = employeeAgentMode.value === 'MCP' ? '/ai/mcp/chat' : '/ai/chat';
+    const response = await request<AgentChatResponse>(chatPath, {
       method: 'POST',
-      body: { message: chatMessage.value }
+      body: { message, sessionId: aiChatSessionId }
     });
+    chatResult.value = response;
+    aiChatMessages.value.push({
+      id: Date.now() + 1,
+      role: 'assistant',
+      content: response.reply
+    });
+
+    const confirmation = toAgentLeaveConfirmation(response);
+    if (confirmation) {
+      aiChatPendingLeave.value = confirmation;
+    }
+    if (['LEAVE_APPLY_SUBMITTED', 'LEAVE_APPLY_CANCELLED', 'NO_PENDING_LEAVE_APPLY'].includes(response.intent)) {
+      aiChatPendingLeave.value = null;
+    }
+    if (response.intent === 'LEAVE_APPLY_SUBMITTED') {
+      await fetchMyLeaveApplications();
+    }
   }, (message) => {
     chatError.value = message;
+    aiChatMessages.value.push({
+      id: Date.now() + 2,
+      role: 'assistant',
+      content: `Agent 调用失败：${message}`
+    });
   }, false);
+  aiChatSending.value = false;
+}
+
+function useAiChatPrompt(message: string) {
+  chatMessage.value = message;
+}
+
+function toAgentLeaveConfirmation(response: AgentChatResponse): LeaveConfirmation | null {
+  if (response.intent !== 'LEAVE_APPLY_PENDING' || !isPendingLeaveApply(response.data)) {
+    return null;
+  }
+  return {
+    leaveType: response.data.leaveType,
+    startTime: response.data.startTime,
+    endTime: response.data.endTime,
+    reason: response.data.reason,
+    message: response.reply
+  };
 }
 
 async function runDifyWorkflowChat() {
@@ -240,6 +363,8 @@ async function runDifyWorkflowChat() {
   }
 
   difyWorkflowError.value = '';
+  pendingLeaveConfirmation.value = null;
+  leaveConfirmError.value = '';
   difyWorkflowSending.value = true;
   difyWorkflowMessages.value.push({
     id: Date.now(),
@@ -249,22 +374,31 @@ async function runDifyWorkflowChat() {
   difyWorkflowMessage.value = '';
 
   await run(async () => {
-    difyWorkflowResult.value = await request<DifyWorkflowAnswer>('/ai/dify/workflow/chat', {
+    const response = await request<DifyWorkflowAnswer>('/ai/dify/workflow/chat', {
       method: 'POST',
-      body: { message }
+      body: {
+        message,
+        agentType: aiAssistantType.value
+      }
     });
+    difyWorkflowResult.value = response;
+    const confirmation = toLeaveConfirmation(response);
+    if (confirmation) {
+      pendingLeaveConfirmation.value = confirmation;
+      leaveConfirmError.value = '';
+    }
     difyWorkflowMessages.value.push({
       id: Date.now() + 1,
       role: 'assistant',
-      content: difyWorkflowResult.value.answer,
-      source: difyWorkflowResult.value.source
+      content: confirmation?.message ?? response.answer,
+      source: response.source
     });
   }, (message) => {
     difyWorkflowError.value = message;
     difyWorkflowMessages.value.push({
       id: Date.now() + 2,
       role: 'assistant',
-      content: `流程调用失败：${message}`
+      content: `${aiAssistantType.value === 'HR_AGENT' ? 'HR Agent' : '流程'}调用失败：${message}`
     });
   }, false);
   difyWorkflowSending.value = false;
@@ -272,6 +406,59 @@ async function runDifyWorkflowChat() {
 
 function useDifyWorkflowPrompt(message: string) {
   difyWorkflowMessage.value = message;
+}
+
+function toLeaveConfirmation(response: DifyWorkflowAnswer): LeaveConfirmation | null {
+  if (!response.needConfirm
+      || !isLeaveType(response.leaveType)
+      || !response.startTime
+      || !response.endTime) {
+    return null;
+  }
+  return {
+    leaveType: response.leaveType,
+    startTime: response.startTime,
+    endTime: response.endTime,
+    reason: response.reason?.trim() || '个人事务',
+    message: response.message || response.answer || '请确认是否提交该请假申请。'
+  };
+}
+
+function isLeaveType(value: unknown): value is LeaveType {
+  return value === 'ANNUAL' || value === 'SICK' || value === 'PERSONAL';
+}
+
+async function confirmLeaveApplication() {
+  const confirmation = pendingLeaveConfirmation.value;
+  if (!confirmation || leaveConfirmSubmitting.value) {
+    return;
+  }
+
+  leaveConfirmSubmitting.value = true;
+  leaveConfirmError.value = '';
+  try {
+    const result = await submitMyLeaveApplication(confirmation);
+    pendingLeaveConfirmation.value = null;
+    difyWorkflowMessages.value.push({
+      id: Date.now(),
+      role: 'assistant',
+      content: `${result.message}，申请编号：${result.applyNo}，状态：${result.status}。`
+    });
+  } catch (cause) {
+    leaveConfirmError.value = cause instanceof Error ? cause.message : '请假申请提交失败';
+  } finally {
+    leaveConfirmSubmitting.value = false;
+  }
+}
+
+function cancelLeaveApplication() {
+  pendingLeaveConfirmation.value = null;
+  leaveConfirmError.value = '';
+  difyWorkflowMessages.value.push({
+    id: Date.now(),
+    role: 'assistant',
+    content: '已取消请假申请。'
+  });
 }
 
 async function runWorkflow() {
@@ -457,14 +644,26 @@ function clearResults() {
   candidates.value = [];
   chatResult.value = null;
   chatError.value = '';
+  aiChatSending.value = false;
+  aiChatPendingLeave.value = null;
+  aiChatMessages.value = [
+    {
+      id: Date.now(),
+      role: 'assistant',
+      content: '你好，我可以帮你查询假期余额、考勤，并通过多轮确认申请请假。'
+    }
+  ];
   difyWorkflowResult.value = null;
   difyWorkflowError.value = '';
   difyWorkflowSending.value = false;
+  pendingLeaveConfirmation.value = null;
+  leaveConfirmSubmitting.value = false;
+  leaveConfirmError.value = '';
   difyWorkflowMessages.value = [
     {
       id: Date.now(),
       role: 'assistant',
-      content: '你好，我可以帮你查询假期余额。'
+      content: '你好，我可以帮你查询假期余额、请假记录和考勤记录。'
     }
   ];
   workflowResult.value = null;
@@ -488,12 +687,33 @@ function leaveTypeText(type: string) {
   return names[type] ?? type;
 }
 
+function leaveStatusText(status: string) {
+  const names: Record<string, string> = {
+    PENDING: '待审批',
+    APPROVED: '已通过',
+    REJECTED: '已拒绝'
+  };
+  return names[status] ?? status;
+}
+
 function dateTimeText(value: string) {
   return value.replace('T', ' ').slice(0, 16);
 }
 
-function isAiChatResponse(value: unknown): value is { intent: string; reply: string; data: unknown } {
+function isAiChatResponse(value: unknown): value is AgentChatResponse {
   return typeof value === 'object' && value !== null && 'intent' in value && 'reply' in value;
+}
+
+function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return record.state === 'pending_leave_apply'
+    && isLeaveType(record.leaveType)
+    && typeof record.startTime === 'string'
+    && typeof record.endTime === 'string'
+    && typeof record.reason === 'string';
 }
 </script>
 
@@ -638,7 +858,7 @@ function isAiChatResponse(value: unknown): value is { intent: string; reply: str
               <strong>{{ item.applyNo }}</strong>
               <span>{{ leaveTypeText(item.leaveType) }}</span>
               <span>{{ dateTimeText(item.startTime) }} 至 {{ dateTimeText(item.endTime) }}</span>
-              <span class="status-text">{{ item.status }}</span>
+              <span class="status-text">{{ leaveStatusText(item.status) }}</span>
               <span>{{ item.reason }}</span>
             </div>
           </div>
@@ -733,31 +953,96 @@ function isAiChatResponse(value: unknown): value is { intent: string; reply: str
         <section id="ai" class="panel">
           <div class="panel-header">
             <div>
-              <h3>AI 对话入口</h3>
-              <p>规则式意图识别，模拟 Tool Calling。</p>
+              <h3>员工 Agent 助手</h3>
+              <p>同一会话支持请假申请、确认、取消和员工业务查询；MCP Agent 会真实调用 HR MCP Server。</p>
             </div>
-            <button @click="chat">发送</button>
+            <label>
+              调用模式
+              <select v-model="employeeAgentMode">
+                <option value="LOCAL">本地 Agent</option>
+                <option value="MCP">MCP Agent</option>
+              </select>
+            </label>
           </div>
-          <textarea v-model="chatMessage" rows="3"></textarea>
+
+          <div class="assistant-shell">
+            <div class="quick-prompts" aria-label="Agent 快捷问题">
+              <button class="secondary" @click="useAiChatPrompt('帮我请明天下午年假')">申请年假</button>
+              <button class="secondary" @click="chat('确认')">确认</button>
+              <button class="secondary" @click="chat('取消')">取消</button>
+              <button class="secondary" @click="useAiChatPrompt('查询我的年假余额')">查年假余额</button>
+              <button class="secondary" @click="useAiChatPrompt('查询本月考勤')">查本月考勤</button>
+            </div>
+
+            <div class="assistant-thread" aria-live="polite">
+              <div
+                v-for="message in aiChatMessages"
+                :key="message.id"
+                class="assistant-message"
+                :class="message.role"
+              >
+                <strong>{{ message.role === 'user' ? session.employeeName : 'Agent 助手' }}</strong>
+                <p>{{ message.content }}</p>
+              </div>
+
+              <article v-if="aiChatPendingLeave" class="leave-confirmation">
+                <div class="leave-confirmation-header">
+                  <div>
+                    <strong>请假申请确认</strong>
+                    <p>{{ aiChatPendingLeave.message }}</p>
+                  </div>
+                  <span>待确认</span>
+                </div>
+                <dl>
+                  <dt>请假类型</dt>
+                  <dd>{{ leaveTypeText(aiChatPendingLeave.leaveType) }}</dd>
+                  <dt>开始时间</dt>
+                  <dd>{{ dateTimeText(aiChatPendingLeave.startTime) }}</dd>
+                  <dt>结束时间</dt>
+                  <dd>{{ dateTimeText(aiChatPendingLeave.endTime) }}</dd>
+                  <dt>请假原因</dt>
+                  <dd>{{ aiChatPendingLeave.reason }}</dd>
+                </dl>
+                <div class="leave-confirmation-actions">
+                  <button type="button" :disabled="aiChatSending" @click="chat('确认')">
+                    {{ aiChatSending ? '处理中' : '确认提交' }}
+                  </button>
+                  <button type="button" class="secondary" :disabled="aiChatSending" @click="chat('取消')">
+                    取消
+                  </button>
+                </div>
+              </article>
+            </div>
+
+            <form class="assistant-composer" @submit.prevent="chat()">
+              <textarea
+                v-model="chatMessage"
+                rows="2"
+                placeholder="例如：帮我请明天下午年假"
+              ></textarea>
+              <button type="submit" :disabled="aiChatSending || !chatMessage.trim()">
+                {{ aiChatSending ? '发送中' : '发送' }}
+              </button>
+            </form>
+          </div>
+
           <div v-if="chatError" class="inline-alert">{{ chatError }}</div>
-          <div v-if="isAiChatResponse(chatResult)" class="ai-reply">{{ chatResult.reply }}</div>
           <div v-if="chatLeaveApplications.length" class="leave-table compact-table">
             <div v-for="item in chatLeaveApplications" :key="item.applyNo" class="leave-row">
               <strong>{{ item.applyNo }}</strong>
               <span>{{ leaveTypeText(item.leaveType) }}</span>
               <span>{{ dateTimeText(item.startTime) }} 至 {{ dateTimeText(item.endTime) }}</span>
-              <span class="status-text">{{ item.status }}</span>
+              <span class="status-text">{{ leaveStatusText(item.status) }}</span>
               <span>{{ item.reason }}</span>
             </div>
           </div>
-          <pre v-if="chatResult">{{ pretty(chatResult) }}</pre>
         </section>
 
         <section id="dify-workflow" class="panel">
           <div class="panel-header">
             <div>
               <h3>员工 AI 助手</h3>
-              <p>前端提问，后端调用 Dify 单流程，再由流程回调 HR Tool API。</p>
+              <p>复用同一会话窗口，可选择固定流程编排或由 HR Agent 自主调用工具。</p>
             </div>
             <button @click="runDifyWorkflowChat" :disabled="difyWorkflowSending || !difyWorkflowMessage.trim()">
               {{ difyWorkflowSending ? '发送中' : '发送' }}
@@ -765,9 +1050,28 @@ function isAiChatResponse(value: unknown): value is { intent: string; reply: str
           </div>
 
           <div class="assistant-shell">
+            <div class="assistant-mode" aria-label="助手模式">
+              <button
+                type="button"
+                :class="{ active: aiAssistantType === 'WORKFLOW' }"
+                @click="aiAssistantType = 'WORKFLOW'"
+              >
+                流程助手
+              </button>
+              <button
+                type="button"
+                :class="{ active: aiAssistantType === 'HR_AGENT' }"
+                @click="aiAssistantType = 'HR_AGENT'"
+              >
+                HR Agent
+              </button>
+            </div>
+
             <div class="quick-prompts" aria-label="快捷问题">
               <button class="secondary" @click="useDifyWorkflowPrompt('帮我查一下我的年假余额')">查年假余额</button>
-              <button class="secondary" @click="useDifyWorkflowPrompt('我的病假还剩多少天')">查病假余额</button>
+              <button class="secondary" @click="useDifyWorkflowPrompt('查询我今年的请假记录')">查请假记录</button>
+              <button class="secondary" @click="useDifyWorkflowPrompt('查询我 2026-06-05 的考勤')">查考勤记录</button>
+              <button class="secondary" @click="useDifyWorkflowPrompt('帮我请明天下午年假，原因是个人事务')">申请年假</button>
             </div>
 
             <div class="assistant-thread" aria-live="polite">
@@ -781,6 +1085,44 @@ function isAiChatResponse(value: unknown): value is { intent: string; reply: str
                 <p>{{ message.content }}</p>
                 <small v-if="message.source">{{ message.source }}</small>
               </div>
+
+              <article v-if="pendingLeaveConfirmation" class="leave-confirmation">
+                <div class="leave-confirmation-header">
+                  <div>
+                    <strong>请假申请确认</strong>
+                    <p>{{ pendingLeaveConfirmation.message }}</p>
+                  </div>
+                  <span>待确认</span>
+                </div>
+                <dl>
+                  <dt>请假类型</dt>
+                  <dd>{{ leaveTypeText(pendingLeaveConfirmation.leaveType) }}</dd>
+                  <dt>开始时间</dt>
+                  <dd>{{ dateTimeText(pendingLeaveConfirmation.startTime) }}</dd>
+                  <dt>结束时间</dt>
+                  <dd>{{ dateTimeText(pendingLeaveConfirmation.endTime) }}</dd>
+                  <dt>请假原因</dt>
+                  <dd>{{ pendingLeaveConfirmation.reason }}</dd>
+                </dl>
+                <div v-if="leaveConfirmError" class="inline-alert">{{ leaveConfirmError }}</div>
+                <div class="leave-confirmation-actions">
+                  <button
+                    type="button"
+                    :disabled="leaveConfirmSubmitting"
+                    @click="confirmLeaveApplication"
+                  >
+                    {{ leaveConfirmSubmitting ? '提交中' : '确认提交' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="secondary"
+                    :disabled="leaveConfirmSubmitting"
+                    @click="cancelLeaveApplication"
+                  >
+                    取消
+                  </button>
+                </div>
+              </article>
             </div>
 
             <form class="assistant-composer" @submit.prevent="runDifyWorkflowChat">

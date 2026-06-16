@@ -15,5 +15,9 @@ public class DifyWorkflowProperties {
 
     private String workflowPath = "/workflows/run";
 
+    private String agentApiKey;
+
+    private String agentPath = "/chat-messages";
+
     private int timeoutSeconds = 60;
 }

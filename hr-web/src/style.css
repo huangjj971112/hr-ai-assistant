@@ -434,6 +434,29 @@ pre {
   gap: 12px;
 }
 
+.assistant-mode {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(320px, 100%);
+  padding: 3px;
+  border: 1px solid #d5dbe5;
+  border-radius: 6px;
+  background: #f4f6f9;
+}
+
+.assistant-mode button {
+  border: 0;
+  background: transparent;
+  color: #596273;
+  box-shadow: none;
+}
+
+.assistant-mode button.active {
+  background: #fff;
+  color: #1d4ed8;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 14%);
+}
+
 .quick-prompts {
   display: flex;
   flex-wrap: wrap;
@@ -488,6 +511,64 @@ pre {
   color: #6d7786;
   font-size: 12px;
   font-weight: 700;
+}
+
+.leave-confirmation {
+  display: grid;
+  gap: 14px;
+  justify-self: start;
+  width: min(620px, 100%);
+  border: 1px solid #b9d8d1;
+  border-radius: 8px;
+  background: #fff;
+  padding: 16px;
+}
+
+.leave-confirmation-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.leave-confirmation-header p {
+  color: #526071;
+  line-height: 1.6;
+  margin: 5px 0 0;
+}
+
+.leave-confirmation-header span {
+  align-self: start;
+  border-radius: 999px;
+  background: #fff7d6;
+  color: #775b00;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+
+.leave-confirmation dl {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 10px 14px;
+  margin: 0;
+}
+
+.leave-confirmation dt {
+  color: #6d7786;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.leave-confirmation dd {
+  color: #253041;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.leave-confirmation-actions {
+  display: flex;
+  gap: 10px;
 }
 
 .assistant-composer {
@@ -614,6 +695,17 @@ pre {
 
   .assistant-message {
     max-width: 100%;
+  }
+
+  .leave-confirmation-header,
+  .leave-confirmation-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .leave-confirmation dl {
+    grid-template-columns: 1fr;
+    gap: 5px;
   }
 
   .span-2,

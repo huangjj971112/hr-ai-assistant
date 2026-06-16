@@ -236,6 +236,8 @@ export DIFY_ENABLED=true
 export DIFY_API_KEY=app-your-dify-workflow-api-key
 export DIFY_BASE_URL=https://api.dify.ai/v1
 export DIFY_WORKFLOW_PATH=/workflows/run
+export DIFY_AGENT_API_KEY=app-your-dify-agent-api-key
+export DIFY_AGENT_PATH=/chat-messages
 mvn -pl hr-service spring-boot:run
 ```
 
@@ -247,6 +249,8 @@ dify:
   base-url: ${DIFY_BASE_URL:https://api.dify.ai/v1}
   api-key: ${DIFY_API_KEY:}
   workflow-path: ${DIFY_WORKFLOW_PATH:/workflows/run}
+  agent-api-key: ${DIFY_AGENT_API_KEY:}
+  agent-path: ${DIFY_AGENT_PATH:/chat-messages}
   timeout-seconds: ${DIFY_TIMEOUT_SECONDS:60}
 ```
 
@@ -255,42 +259,81 @@ dify:
 ### Dify Workflow 节点建议
 
 ```text
-1. Start：接收 message、userId、username、employeeName、role、tenantId、token
-2. LLM：识别是否是查询年假余额
-3. IF/ELSE：判断意图
-4. HTTP：调用 /api/ai/tools/leave/balance
-5. LLM：根据 Tool 返回 JSON 组织自然语言
-6. End：输出 answer
+1. Start：接收 message、userId、username、employeeName、role、tenantId、toolToken
+2. 问题分类器：识别假期余额、请假记录或考勤查询
+3. 条件分支：进入对应 HTTP Tool 节点
+4. End：输出 HTTP Tool 返回结果
 ```
 
-HTTP 节点示例，走网关：
+推荐分类：
 
 ```text
-POST http://localhost:8090/api/ai/tools/leave/balance
+LEAVE_BALANCE：假期余额、年假余额、病假余额
+LEAVE_RECORDS：请假记录、休假记录、今年请过哪些假
+ATTENDANCE_RECORDS：考勤、签到、签退、迟到、早退
 ```
 
-Headers:
+本地 Docker Dify 调用业务服务时，三个 HTTP 节点分别使用：
 
 ```text
-Authorization: Bearer {{token}}
-Content-Type: application/json
+POST http://host.docker.internal:8091/api/ai/tools/leave/balance
+POST http://host.docker.internal:8091/api/ai/tools/leave/records
+POST http://host.docker.internal:8091/api/ai/tools/attendance/records
+POST http://host.docker.internal:8091/api/ai/tools/leave/apply
 ```
 
-Body:
+假期余额 Body：
 
 ```json
 {
-  "employeeName": "{{employeeName}}"
+  "employeeName": "{{employeeName}}",
+  "toolToken": "{{toolToken}}"
 }
 ```
 
-本地开发也可以让 Dify 直接调业务服务：
+请假记录 Body：
 
-```text
-POST http://localhost:8091/api/ai/tools/leave/balance
+```json
+{
+  "employeeName": "{{employeeName}}",
+  "year": 2026,
+  "toolToken": "{{toolToken}}"
+}
 ```
 
-区别是：走 `8090` 会经过 Gateway 的统一鉴权和请求头透传；直接调 `8091` 则由 `hr-service` 自己解析 `Authorization` 里的 JWT。推荐演示企业架构时走 Gateway。
+考勤查询 Body：
+
+```json
+{
+  "employeeName": "{{employeeName}}",
+  "startDate": "{{参数提取器.startDate}}",
+  "endDate": "{{参数提取器.endDate}}",
+  "toolToken": "{{toolToken}}"
+}
+```
+
+考勤日期通过参数提取器从用户问题中提取。查询单日时 `startDate` 和 `endDate` 可以设置为同一天；只传其中一个日期时，后端会自动将另一个日期补成同一天。旧的 `attendanceDate` 字段仍兼容。
+
+Tool API 会在 `hr-service` 中校验短期 `toolToken` 的身份、租户和 scope。生产架构可以让 Dify 经 Gateway 调用 Tool API；本地 Docker 演示为避免代理和 SSRF 配置干扰，可以直接调用 `8091`。
+
+请假操作使用前端确认模式。Dify 参数提取器只提取 `leaveType`、`startTime`、`endTime` 和
+`reason`，并通过结束节点返回 `needConfirm=true`：
+
+```json
+{
+  "needConfirm": true,
+  "leaveType": "ANNUAL",
+  "startTime": "2026-06-08 14:00:00",
+  "endTime": "2026-06-08 18:00:00",
+  "reason": "个人事务",
+  "message": "您将申请2026-06-08下午年假，是否确认提交？"
+}
+```
+
+- Dify 不调用提交接口，也没有请假写入 scope。
+- 前端展示确认卡片，只有用户点击确认后才调用 `POST /api/employee/me/leave/apply`。
+- 后端从登录身份取得员工信息，不信任 Dify 或前端传入的员工姓名。
+- `/api/ai/tools/leave/apply` 仅保留草稿校验能力；即使传入 `confirmed=true` 也会拒绝写库。
 
 ## 接口示例
 
@@ -508,9 +551,25 @@ curl -X POST "http://localhost:8090/api/ai/dify/workflow/chat" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <EMPLOYEE_TOKEN>" \
   -d '{
-    "message": "帮我查一下我的年假余额"
+    "message": "帮我查一下我的年假余额",
+    "agentType": "WORKFLOW"
   }'
 ```
+
+`agentType` 可选，默认值为 `WORKFLOW`，原有请求保持兼容。切换到 HR Agent 时仍调用同一个接口：
+
+```bash
+curl -X POST "http://localhost:8090/api/ai/dify/workflow/chat" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <EMPLOYEE_TOKEN>" \
+  -d '{
+    "message": "帮我查这周考勤和年假余额",
+    "agentType": "HR_AGENT"
+  }'
+```
+
+后端会根据当前登录用户生成有效期 5 分钟的 `toolToken`，并向 Dify Agent 传入
+`employeeName`、`employeeId`、`toolToken`、`currentDateTime` 和 `query`。前端不能传入或读取 `toolToken`。
 
 未配置 Dify 时返回：
 
@@ -572,19 +631,104 @@ curl -X POST "http://localhost:8090/api/ai/tools/leave/balance" \
 }
 ```
 
+### 13. Agent Memory 多轮请假确认
+
+`/api/ai/chat` 使用 `userId + sessionId` 隔离待确认请假申请。正常运行默认使用 Redis，TTL 默认 20 分钟；测试 profile 使用内存实现。
+
+```bash
+docker compose up -d redis
+```
+
+第一轮只生成待确认申请，不写入请假表：
+
+```json
+{
+  "sessionId": "employee-chat-001",
+  "message": "帮我请明天下午年假"
+}
+```
+
+第二轮使用同一个 `sessionId` 确认：
+
+```json
+{
+  "sessionId": "employee-chat-001",
+  "message": "确认"
+}
+```
+
+支持确认词：`确认`、`确定`、`提交`。支持取消词：`取消`、`算了`、`不提交`。
+
+Spring AI `ChatClient` 仅在应用中存在 `ChatModel` Bean 时启用，并自动注册查询类 `HrAgentTools`。默认无模型配置时继续使用确定性本地路由，不影响启动。`applyLeave` 不暴露给模型，只能由后端在同一会话确认 Redis pending 状态后调用。
+
+启用智谱 GLM Tool Calling：
+
+```bash
+export SPRING_AI_CHAT_MODEL=zhipuai
+export ZHIPUAI_API_KEY=你的智谱API_KEY
+export ZHIPUAI_CHAT_MODEL=glm-4-air
+```
+
+智谱调用失败时会自动回退到原有关键词路由。智谱 Embedding 和 Image Model 默认关闭，避免无关模型在没有 API Key 时影响本地启动。
+
+### 14. HR MCP Server
+
+`hr-service` 默认通过 Streamable HTTP 暴露 MCP Server：
+
+```text
+http://localhost:8091/mcp
+```
+
+MCP Server 仅注册以下 Tool：
+
+- `query_leave_balance`
+- `query_attendance`
+- `query_leave_policy`
+- `create_leave_pending`
+- `confirm_leave_apply`
+- `cancel_pending`
+
+每个请求都需要员工助手生成的 5 分钟 `toolToken`。请假必须先调用
+`create_leave_pending`，再使用相同 `toolToken` 身份与 `sessionId` 调用
+`confirm_leave_apply`；MCP Server 不提供直接提交 Tool。待确认数据继续由现有
+`AgentMemoryService` 管理，正常环境使用 Redis，TTL 默认 20 分钟。
+
+`POST /api/ai/mcp/chat` 使用配置的 `ChatModel` 自主选择上述 MCP Tool，不再使用
+关键词路由；模型不可用或调用失败时分别返回 `MCP_MODEL_UNAVAILABLE` 和
+`MCP_MODEL_CALL_FAILED`，不会回退到本地关键词 Agent。模型只看到业务入参，
+`toolToken`、`sessionId`、`pendingId`、`version` 和 `idempotencyKey` 均由后端注入。
+
+pending 状态包含 `pendingId`、`version` 和状态字段。确认提交需要同时匹配
+`pendingId + version`，并使用 `idempotencyKey` 防止重复提交。每次 MCP Tool
+调用都会返回 `traceId`，并写入 `mcp_tool_audit_log`；审计摘要会隐藏 token、
+幂等键和用户原始消息等敏感内容。
+
+可通过 `MCP_SERVER_ENABLED=false` 关闭 MCP Server，或通过
+`spring.ai.mcp.server.streamable-http.mcp-endpoint` 调整端点。
+
+前端“员工 Agent 助手”面板提供“本地 Agent / MCP Agent”调用模式。选择
+“MCP Agent”后，页面继续使用普通登录 JWT 调用：
+
+```text
+POST /api/ai/mcp/chat
+```
+
+后端会生成短期 `toolToken`，由大模型选择工具后通过 MCP SDK 调用本服务的
+`/mcp`，浏览器不会接触 `toolToken` 或 MCP Session。可依次测试“查询我的年假余额”、
+“帮我请下周二年假”和“确认”。
+
 ## 测试
 
 ```bash
 mvn test
 ```
 
-当前测试覆盖 Spring 上下文启动、HR 业务接口、AI 对话入口、请假 Workflow、Dify 员工手册问答、Dify Workflow mock 分支和 Tool API 权限控制。
+当前测试覆盖 Spring 上下文启动、HR 业务接口、AI 对话入口、多轮请假确认、Redis Memory、请假 Workflow 防绕过、Dify 员工手册问答、Dify Workflow mock 分支和 Tool API 权限控制。
 
 ## 后续扩展方向
 
 - 引入 Flyway/Liquibase 替代 `schema.sql`，管理表结构和初始化数据。
-- 用 Spring AI `ChatClient` 替换规则式意图识别。
-- 在 `LeaveTools`、`CandidateTools` 等工具类上接入 Spring AI Tool Calling 注解。
+- 扩展更多 Spring AI 员工查询工具。
 - 将 Dify Workflow 调用从 blocking 模式扩展为 SSE 流式输出。
 - 为 HR 制度文档增加切片、Embedding、向量检索和 RAG 回答链路。
 - 增加 SSE 流式输出接口，例如 `/api/ai/chat/stream`。

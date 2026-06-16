@@ -1,10 +1,17 @@
 package com.example.hrai;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.example.hrai.dto.leave.LeaveApplyRequest;
 import com.example.hrai.entity.AiWorkflowRun;
 import com.example.hrai.entity.AiWorkflowStepLog;
+import com.example.hrai.entity.LeaveApplication;
+import com.example.hrai.entity.LeaveStatus;
+import com.example.hrai.entity.LeaveType;
 import com.example.hrai.repository.AiWorkflowRunRepository;
 import com.example.hrai.repository.AiWorkflowStepLogRepository;
+import com.example.hrai.repository.EmployeeLeaveBalanceRepository;
+import com.example.hrai.repository.LeaveApplicationRepository;
+import com.example.hrai.service.LeaveService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -17,6 +24,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 
+import java.time.LocalDateTime;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -37,6 +45,12 @@ class HrAiAssistantApplicationTests {
 
     @Autowired
     private AiWorkflowStepLogRepository aiWorkflowStepLogRepository;
+
+    @Autowired
+    private LeaveApplicationRepository leaveApplicationRepository;
+
+    @Autowired
+    private EmployeeLeaveBalanceRepository employeeLeaveBalanceRepository;
 
     private final TestRestTemplate restTemplate = new TestRestTemplate();
 
@@ -80,7 +94,7 @@ class HrAiAssistantApplicationTests {
 
         assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
         assertThat(response.getBody()).contains("\"status\":\"PENDING\"");
-        assertThat(response.getBody()).contains("\"message\":\"请假申请已提交\"");
+        assertThat(response.getBody()).contains("\"message\":\"请假申请已提交，等待审批\"");
     }
 
     @Test
@@ -267,7 +281,8 @@ class HrAiAssistantApplicationTests {
         assertThat(response.getBody()).contains("\"stepName\":\"SlotExtraction\"");
         assertThat(response.getBody()).contains("\"stepName\":\"BalanceCheck\"");
         assertThat(response.getBody()).contains("\"stepName\":\"LeaveApply\"");
-        assertThat(response.getBody()).contains("\"applyNo\":\"LV");
+        assertThat(response.getBody()).contains("\"status\":\"PENDING_CONFIRMATION\"");
+        assertThat(response.getBody()).contains("\"result\":null");
 
         Matcher matcher = WORKFLOW_ID_PATTERN.matcher(response.getBody());
         assertThat(matcher.find()).isTrue();
@@ -329,6 +344,63 @@ class HrAiAssistantApplicationTests {
         assertThat(response.getBody()).contains("\"applyNo\":\"LV202601100001\"");
         assertThat(response.getBody()).contains("\"applyNo\":\"LV202603180001\"");
         assertThat(response.getBody()).doesNotContain("\"employeeName\":\"李四\"");
+    }
+
+    @Test
+    void shouldSubmitCurrentEmployeeLeaveFromConfirmationCard() {
+        long beforeCount = leaveApplicationRepository.selectCount(null);
+        String request = """
+                {
+                  "leaveType": "ANNUAL",
+                  "startTime": "2026-06-11 14:00:00",
+                  "endTime": "2026-06-11 18:00:00",
+                  "reason": "个人事务"
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/employee/me/leave/apply"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody()).contains("\"status\":\"PENDING\"");
+        assertThat(response.getBody()).contains("\"message\":\"请假申请已提交，等待审批\"");
+        assertThat(response.getBody()).contains("\"applyNo\":\"LV");
+        assertThat(leaveApplicationRepository.selectCount(null)).isEqualTo(beforeCount + 1);
+    }
+
+    @Test
+    void shouldContinueApplyNumberFromDatabaseAfterServiceRestart() {
+        LocalDateTime startTime = LocalDateTime.of(2027, 12, 31, 9, 0);
+        LeaveApplication existingApplication = new LeaveApplication(
+                null,
+                "LV202712310007",
+                "张三",
+                LeaveType.ANNUAL,
+                startTime.minusHours(1),
+                startTime,
+                "已有申请",
+                LeaveStatus.PENDING,
+                LocalDateTime.now()
+        );
+        leaveApplicationRepository.insert(existingApplication);
+
+        LeaveApplyRequest request = new LeaveApplyRequest();
+        request.setEmployeeName("张三");
+        request.setLeaveType(LeaveType.ANNUAL);
+        request.setStartTime(startTime);
+        request.setEndTime(startTime.plusHours(8));
+        request.setReason("验证服务重启后续号");
+
+        LeaveService restartedLeaveService = new LeaveService(
+                employeeLeaveBalanceRepository,
+                leaveApplicationRepository
+        );
+
+        assertThat(restartedLeaveService.apply(request).getApplyNo()).isEqualTo("LV202712310008");
     }
 
     @Test
@@ -394,6 +466,28 @@ class HrAiAssistantApplicationTests {
     }
 
     @Test
+    void shouldCallDifyHrAgentFromExistingChatEndpoint() {
+        String request = """
+                {
+                  "message": "帮我查这周考勤和年假余额",
+                  "agentType": "HR_AGENT"
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/dify/workflow/chat"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody()).contains("\"source\":\"mock-dify-agent\"");
+        assertThat(response.getBody()).contains("帮我查这周考勤和年假余额");
+        assertThat(response.getBody()).doesNotContain("toolToken");
+    }
+
+    @Test
     void shouldCallLeaveBalanceToolForCurrentEmployee() {
         String request = """
                 {
@@ -450,7 +544,7 @@ class HrAiAssistantApplicationTests {
 
         assertThat(response.getStatusCode().value()).isEqualTo(400);
         assertThat(response.getBody()).contains("\"code\":\"FORBIDDEN\"");
-        assertThat(response.getBody()).contains("员工只能查询或操作自己的请假信息");
+        assertThat(response.getBody()).contains("员工只能查询或操作自己的信息");
     }
 
     @Test
@@ -474,6 +568,189 @@ class HrAiAssistantApplicationTests {
         assertThat(response.getBody()).contains("\"applyNo\":\"LV202601100001\"");
         assertThat(response.getBody()).contains("\"applyNo\":\"LV202603180001\"");
         assertThat(response.getBody()).doesNotContain("\"employeeName\":\"李四\"");
+    }
+
+    @Test
+    void shouldQueryCurrentEmployeeAttendance() {
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/employee/me/attendance/records?startDate=2026-06-03&endDate=2026-06-04"),
+                HttpMethod.GET,
+                authEntity(employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody()).contains("\"employeeName\":\"张三\"");
+        assertThat(response.getBody()).contains("\"attendanceDate\":\"2026-06-03\"");
+        assertThat(response.getBody()).contains("\"attendanceDate\":\"2026-06-04\"");
+        assertThat(response.getBody()).contains("\"status\":\"LATE\"");
+        assertThat(response.getBody()).contains("迟到 18 分钟");
+    }
+
+    @Test
+    void shouldCallAttendanceRecordsToolForCurrentEmployee() {
+        String request = """
+                {
+                  "employeeName": "张三",
+                  "startDate": "2026-06-03",
+                  "endDate": "2026-06-05"
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/tools/attendance/records"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody()).contains("\"employeeName\":\"张三\"");
+        assertThat(response.getBody()).contains("\"attendanceDate\":\"2026-06-03\"");
+        assertThat(response.getBody()).contains("\"attendanceDate\":\"2026-06-04\"");
+        assertThat(response.getBody()).contains("\"status\":\"EARLY_LEAVE\"");
+        assertThat(response.getBody()).doesNotContain("\"employeeName\":\"李四\"");
+    }
+
+    @Test
+    void shouldDefaultMissingAttendanceEndDateToStartDate() {
+        String request = """
+                {
+                  "employeeName": "张三",
+                  "startDate": "2026-06-04"
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/tools/attendance/records"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody()).contains("\"attendanceDate\":\"2026-06-04\"");
+        assertThat(response.getBody()).doesNotContain("\"attendanceDate\":\"2026-06-03\"");
+        assertThat(response.getBody()).doesNotContain("\"attendanceDate\":\"2026-06-05\"");
+    }
+
+    @Test
+    void shouldRejectInvalidAttendanceDateRange() {
+        String request = """
+                {
+                  "employeeName": "张三",
+                  "startDate": "2026-06-05",
+                  "endDate": "2026-06-03"
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/tools/attendance/records"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        assertThat(response.getBody()).contains("\"code\":\"INVALID_ATTENDANCE_DATE_RANGE\"");
+    }
+
+    @Test
+    void shouldRejectEmployeeCallingAttendanceToolForOtherEmployee() {
+        String request = """
+                {
+                  "employeeName": "李四",
+                  "attendanceDate": "2026-06-05"
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/tools/attendance/records"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        assertThat(response.getBody()).contains("\"code\":\"FORBIDDEN\"");
+        assertThat(response.getBody()).contains("员工只能查询或操作自己的信息");
+    }
+
+    @Test
+    void shouldPreviewLeaveApplyWithoutWritingDatabase() {
+        long beforeCount = leaveApplicationRepository.selectCount(null);
+        String request = """
+                {
+                  "employeeName": "张三",
+                  "leaveType": "ANNUAL",
+                  "startTime": "2026-06-08 14:00:00",
+                  "endTime": "2026-06-08 18:00:00",
+                  "reason": "个人事务",
+                  "confirmed": false
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/tools/leave/apply"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody()).contains("\"submitted\":false");
+        assertThat(response.getBody()).contains("\"status\":\"DRAFT\"");
+        assertThat(leaveApplicationRepository.selectCount(null)).isEqualTo(beforeCount);
+    }
+
+    @Test
+    void shouldRejectAiToolLeaveSubmissionEvenWhenConfirmed() {
+        long beforeCount = leaveApplicationRepository.selectCount(null);
+        String request = """
+                {
+                  "employeeName": "张三",
+                  "leaveType": "ANNUAL",
+                  "startTime": "2026-06-09 14:00:00",
+                  "endTime": "2026-06-09 18:00:00",
+                  "reason": "个人事务",
+                  "confirmed": true
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/tools/leave/apply"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        assertThat(response.getBody()).contains("\"code\":\"AI_TOOL_CONFIRMATION_NOT_ALLOWED\"");
+        assertThat(leaveApplicationRepository.selectCount(null)).isEqualTo(beforeCount);
+    }
+
+    @Test
+    void shouldRejectEmployeeApplyingLeaveForOtherEmployee() {
+        String request = """
+                {
+                  "employeeName": "李四",
+                  "leaveType": "ANNUAL",
+                  "startTime": "2026-06-10 09:00:00",
+                  "endTime": "2026-06-10 18:00:00",
+                  "reason": "个人事务",
+                  "confirmed": true
+                }
+                """;
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/ai/tools/leave/apply"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        assertThat(response.getBody()).contains("\"code\":\"FORBIDDEN\"");
     }
 
     private String url(String path) {

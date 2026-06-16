@@ -1,7 +1,6 @@
 package com.example.hrai.workflow.leave;
 
 import com.example.hrai.dto.leave.LeaveApplyRequest;
-import com.example.hrai.dto.leave.LeaveApplyResponse;
 import com.example.hrai.service.LeaveService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.annotation.Order;
@@ -23,8 +22,7 @@ public class LeaveApplySubmitStep implements LeaveApplyWorkflowStep {
         request.setEndTime(context.getEndTime());
         request.setReason(context.getReason());
 
-        LeaveApplyResponse response = leaveService.apply(request);
-        context.setResult(response);
-        context.addStep("LeaveApply", "SUCCESS", "请假申请已提交");
+        leaveService.validateApply(request);
+        context.addStep("LeaveApply", "PENDING_CONFIRMATION", "请假申请待员工确认，未提交");
     }
 }

@@ -2,6 +2,37 @@ spring:
   application:
     name: hr-ai-assistant
 
+  ai:
+    model:
+      chat: ${SPRING_AI_CHAT_MODEL:none}
+      embedding: none
+      image: none
+    zhipuai:
+      api-key: ${ZHIPUAI_API_KEY:}
+      chat:
+        options:
+          model: ${ZHIPUAI_CHAT_MODEL:glm-4-air}
+          temperature: 0.2
+    mcp:
+      server:
+        enabled: ${MCP_SERVER_ENABLED:true}
+        name: hr-mcp-server
+        version: 1.0.0
+        protocol: STREAMABLE
+        type: SYNC
+        capabilities:
+          resource: false
+          prompt: false
+          completion: false
+          tool: true
+        streamable-http:
+          mcp-endpoint: /mcp
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: Asia/Shanghai
@@ -40,12 +71,21 @@ dify:
   base-url: ${DIFY_BASE_URL:https://api.dify.ai/v1}
   api-key: ${DIFY_API_KEY:}
   workflow-path: ${DIFY_WORKFLOW_PATH:/workflows/run}
+  agent-api-key: ${DIFY_AGENT_API_KEY:}
+  agent-path: ${DIFY_AGENT_PATH:/chat-messages}
   timeout-seconds: ${DIFY_TIMEOUT_SECONDS:60}
 
 app:
   ai:
     provider: ${AI_PROVIDER:openai}
     model: ${AI_MODEL:gpt-4o-mini}
+    mcp:
+      base-url: ${HR_MCP_BASE_URL:http://localhost:${SERVER_PORT:8091}}
+      endpoint: ${HR_MCP_ENDPOINT:/mcp}
+    model-call-timeout: ${AI_MODEL_CALL_TIMEOUT:30s}
+    agent-memory:
+      store: ${AGENT_MEMORY_STORE:redis}
+      pending-leave-ttl: ${AGENT_MEMORY_PENDING_LEAVE_TTL:20m}
   dify:
     enabled: ${DIFY_ENABLED:false}
     base-url: ${DIFY_BASE_URL:https://api.dify.ai/v1}

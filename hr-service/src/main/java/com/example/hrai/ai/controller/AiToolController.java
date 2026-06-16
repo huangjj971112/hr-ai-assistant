@@ -1,8 +1,12 @@
 package com.example.hrai.ai.controller;
 
+import com.example.hrai.ai.dto.AttendanceRecordsToolRequest;
+import com.example.hrai.ai.dto.LeaveApplyToolRequest;
+import com.example.hrai.ai.dto.LeaveApplyToolResponse;
 import com.example.hrai.ai.dto.LeaveBalanceToolRequest;
 import com.example.hrai.ai.dto.LeaveRecordsToolRequest;
 import com.example.hrai.ai.service.AiToolService;
+import com.example.hrai.dto.attendance.AttendanceRecordResponse;
 import com.example.hrai.dto.leave.LeaveApplicationResponse;
 import com.example.hrai.dto.leave.LeaveBalanceResponse;
 import lombok.RequiredArgsConstructor;
@@ -28,5 +32,15 @@ public class AiToolController {
     @PostMapping("/leave/records")
     public List<LeaveApplicationResponse> queryLeaveRecords(@RequestBody LeaveRecordsToolRequest request) {
         return aiToolService.queryLeaveRecords(request);
+    }
+
+    @PostMapping("/attendance/records")
+    public List<AttendanceRecordResponse> queryAttendanceRecords(@RequestBody AttendanceRecordsToolRequest request) {
+        return aiToolService.queryAttendanceRecords(request);
+    }
+
+    @PostMapping("/leave/apply")
+    public LeaveApplyToolResponse applyLeave(@RequestBody LeaveApplyToolRequest request) {
+        return aiToolService.applyLeave(request);
     }
 }
