@@ -97,9 +97,9 @@ public class HrMcpToolService {
     public ToolResult<KnowledgeAskResponse> queryLeavePolicy(QueryLeavePolicyMcpRequest request) {
         return execute("query_leave_policy", "请假制度查询成功", arguments(request), () -> {
             requireRequest(request);
-            caller(request.toolToken(), LEAVE_POLICY_READ);
+            ToolTokenContext caller = caller(request.toolToken(), LEAVE_POLICY_READ);
             requireText(request.question(), "question");
-            return knowledgeTools.askKnowledge(request.question().trim());
+            return knowledgeTools.askKnowledge(request.question().trim(), caller.employeeName(), request.toolToken());
         });
     }
 

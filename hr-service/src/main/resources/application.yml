@@ -90,6 +90,9 @@ app:
     enabled: ${DIFY_ENABLED:false}
     base-url: ${DIFY_BASE_URL:https://api.dify.ai/v1}
     api-key: ${DIFY_API_KEY:}
+    workflow-path: ${DIFY_WORKFLOW_PATH:/workflows/run}
+    agent-api-key: ${DIFY_AGENT_API_KEY:}
+    agent-path: ${DIFY_AGENT_PATH:/chat-messages}
     timeout-seconds: ${DIFY_TIMEOUT_SECONDS:60}
   security:
     jwt-secret: ${JWT_SECRET:hr-ai-assistant-demo-secret-change-me-32}

@@ -107,14 +107,14 @@ class HrMcpToolServiceTest {
     @Test
     void shouldQueryLeavePolicyThroughExistingKnowledgeTool() {
         allowScopes("leave:policy:read");
-        when(knowledgeTools.askKnowledge("年假可以结转吗"))
+        when(knowledgeTools.askKnowledge("年假可以结转吗", "张三", TOKEN))
                 .thenReturn(new KnowledgeAskResponse("可以结转 5 天", "员工手册", "conversation-1"));
 
         var result = service.queryLeavePolicy(new QueryLeavePolicyMcpRequest(TOKEN, "年假可以结转吗"));
 
         assertThat(result.success()).isTrue();
         assertThat(result.data().getSource()).isEqualTo("员工手册");
-        verify(knowledgeTools).askKnowledge("年假可以结转吗");
+        verify(knowledgeTools).askKnowledge("年假可以结转吗", "张三", TOKEN);
     }
 
     @Test

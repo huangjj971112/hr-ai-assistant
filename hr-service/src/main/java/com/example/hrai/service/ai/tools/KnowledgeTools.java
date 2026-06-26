@@ -5,6 +5,8 @@ import com.example.hrai.service.KnowledgeBaseService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.Map;
+
 @Service
 @RequiredArgsConstructor
 public class KnowledgeTools {
@@ -13,5 +15,13 @@ public class KnowledgeTools {
 
     public KnowledgeAskResponse askKnowledge(String question) {
         return knowledgeBaseService.ask(question);
+    }
+
+    public KnowledgeAskResponse askKnowledge(String question, String employeeName) {
+        return knowledgeBaseService.ask(question, employeeName);
+    }
+
+    public KnowledgeAskResponse askKnowledge(String question, String employeeName, String toolToken) {
+        return knowledgeBaseService.ask(question, employeeName, Map.of("toolToken", toolToken));
     }
 }

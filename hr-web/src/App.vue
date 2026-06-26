@@ -91,12 +91,50 @@ type AssistantMessage = {
   role: 'user' | 'assistant';
   content: string;
   source?: string;
+  observation?: AgentObservationSnapshot | null;
 };
 
 type AgentChatResponse = {
   intent: string;
   reply: string;
   data: unknown;
+  observation?: AgentObservationSnapshot | null;
+};
+
+type AgentObservationStatus = 'SUCCESS' | 'FAILED' | 'PARTIAL';
+
+type AgentToolObservation = {
+  toolName: string;
+  status: AgentObservationStatus;
+  durationMs: number;
+  traceId?: string | null;
+  inputSummary: Record<string, string | number | boolean>;
+  resultSummary: Record<string, string | number | boolean>;
+  evidenceSource?: string | null;
+  errorCode?: string | null;
+};
+
+type AgentObservationStep = {
+  agentName: string;
+  status: AgentObservationStatus;
+  durationMs: number;
+  summary?: string | null;
+  toolCalls: AgentToolObservation[];
+};
+
+type AgentDecisionObservation = {
+  outcome: string;
+  basis: string;
+  needsHumanConfirmation: boolean;
+};
+
+type AgentObservationSnapshot = {
+  requestId: string;
+  status: AgentObservationStatus;
+  totalDurationMs: number;
+  summarySteps: string[];
+  steps: AgentObservationStep[];
+  decision?: AgentDecisionObservation | null;
 };
 
 type PendingLeaveApply = {
@@ -130,7 +168,10 @@ const password = ref('123456');
 const hrEmployeeName = ref('张三');
 const candidateKeyword = ref('Java');
 const chatMessage = ref('帮我查询张三的年假余额');
-const employeeAgentMode = ref<EmployeeAgentMode>('LOCAL');
+// 员工侧默认走 MCP Agent，调试时再切回本地 Agent，避免主流程和旧演示入口混在一起。
+const employeeAgentMode = ref<EmployeeAgentMode>('MCP');
+// 高级能力默认折叠，只在排查 Dify、旧 Workflow 或原始数据时展开。
+const showAdvancedTools = ref(false);
 const aiChatSessionId = crypto.randomUUID();
 const difyWorkflowMessage = ref('帮我查一下我的年假余额');
 const aiAssistantType = ref<AiAssistantType>('WORKFLOW');
@@ -149,6 +190,7 @@ const hrBalance = ref<LeaveBalance | null>(null);
 const candidates = ref<Candidate[]>([]);
 const chatResult = ref<unknown>(null);
 const aiChatPendingLeave = ref<LeaveConfirmation | null>(null);
+const selectedObservationMessageId = ref<number | null>(null);
 const aiChatMessages = ref<AssistantMessage[]>([
   {
     id: Date.now(),
@@ -177,6 +219,16 @@ const chatLeaveApplications = computed(() => {
   }
   return Array.isArray(chatResult.value.data) ? chatResult.value.data as LeaveApplication[] : [];
 });
+const selectedObservationMessage = computed(() => {
+  if (selectedObservationMessageId.value) {
+    const selected = aiChatMessages.value.find((message) => message.id === selectedObservationMessageId.value);
+    if (selected?.observation) {
+      return selected;
+    }
+  }
+  return [...aiChatMessages.value].reverse().find((message) => message.observation) ?? null;
+});
+const selectedObservation = computed(() => selectedObservationMessage.value?.observation ?? null);
 
 onMounted(async () => {
   if (!session.value) {
@@ -312,11 +364,16 @@ async function chat(messageOverride?: string) {
       body: { message, sessionId: aiChatSessionId }
     });
     chatResult.value = response;
+    const assistantMessageId = Date.now() + 1;
     aiChatMessages.value.push({
-      id: Date.now() + 1,
+      id: assistantMessageId,
       role: 'assistant',
-      content: response.reply
+      content: response.reply,
+      observation: response.observation ?? null
     });
+    if (response.observation) {
+      selectedObservationMessageId.value = assistantMessageId;
+    }
 
     const confirmation = toAgentLeaveConfirmation(response);
     if (confirmation) {
@@ -341,6 +398,12 @@ async function chat(messageOverride?: string) {
 
 function useAiChatPrompt(message: string) {
   chatMessage.value = message;
+}
+
+function selectObservation(message: AssistantMessage) {
+  if (message.observation) {
+    selectedObservationMessageId.value = message.id;
+  }
 }
 
 function toAgentLeaveConfirmation(response: AgentChatResponse): LeaveConfirmation | null {
@@ -646,6 +709,7 @@ function clearResults() {
   chatError.value = '';
   aiChatSending.value = false;
   aiChatPendingLeave.value = null;
+  selectedObservationMessageId.value = null;
   aiChatMessages.value = [
     {
       id: Date.now(),
@@ -676,6 +740,26 @@ function clearResults() {
 
 function pretty(value: unknown) {
   return JSON.stringify(value, null, 2);
+}
+
+function statusText(status: AgentObservationStatus) {
+  const names: Record<AgentObservationStatus, string> = {
+    SUCCESS: '成功',
+    FAILED: '失败',
+    PARTIAL: '部分完成'
+  };
+  return names[status] ?? status;
+}
+
+function summaryEntries(summary: Record<string, string | number | boolean>) {
+  return Object.entries(summary ?? {});
+}
+
+function observationTitle(message: AssistantMessage | null) {
+  if (!message) {
+    return '等待一次 Agent 回复';
+  }
+  return `已选择第 ${aiChatMessages.value.findIndex((item) => item.id === message.id) + 1} 条助手回复`;
 }
 
 function leaveTypeText(type: string) {
@@ -724,18 +808,16 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
         <div class="brand-mark">HR</div>
         <div>
           <h1>HR AI Assistant</h1>
-          <p>Gateway + AI Workflow Demo</p>
+          <p>员工自助与智能助手</p>
         </div>
       </div>
 
       <nav v-if="session" class="nav-list">
-        <a href="#employee" :class="{ disabled: !isEmployee && !isHr }">员工端</a>
+        <a href="#employee" :class="{ disabled: !isEmployee && !isHr }">首页</a>
+        <a href="#ai">员工助手</a>
         <a href="#leave-history" :class="{ disabled: !isEmployee && !isHr }">请假记录</a>
-        <a href="#handbook" :class="{ disabled: !isEmployee && !isHr }">员工手册</a>
-        <a v-if="isHr" href="#hr">HR 工作台</a>
-        <a href="#ai">AI 助手</a>
-        <a href="#dify-workflow">Dify Workflow</a>
-        <a href="#workflow">Workflow</a>
+        <a v-if="isHr" href="#hr">HR 管理</a>
+        <a href="#advanced">高级/调试</a>
       </nav>
     </aside>
 
@@ -743,7 +825,7 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
       <div class="topbar">
         <div>
           <h2>{{ session ? '工作台' : '登录' }}</h2>
-          <p>所有请求先进入 Gateway，再转发到 hr-service。</p>
+          <p>{{ session ? '先处理员工最常用的查询、请假和确认流程。' : '使用内置演示账号体验员工端和 HR 端权限差异。' }}</p>
         </div>
         <div class="topbar-actions">
           <div class="status-pill" :class="{ online: session }">
@@ -787,23 +869,31 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
 
       <template v-if="session">
         <section id="employee" class="dashboard-grid">
-          <article class="panel">
+          <article class="panel employee-summary">
             <div class="panel-header">
               <div>
-                <h3>员工端身份</h3>
-                <p>从 JWT 或 Gateway 透传头识别当前员工。</p>
+                <h3>我的工作台</h3>
+                <p>把常用入口放在这里，日常只需要看这一组信息。</p>
               </div>
-              <button class="secondary" @click="fetchMe">刷新</button>
             </div>
-            <pre v-if="me">{{ pretty(me) }}</pre>
-            <p v-else class="empty">尚未加载当前员工信息。</p>
+            <div class="profile-card">
+              <div class="avatar large">{{ session.employeeName.slice(0, 1) }}</div>
+              <div>
+                <strong>{{ session.employeeName }}</strong>
+                <span>{{ session.username }} · {{ session.role === 'HR' ? 'HR 管理员' : '员工' }}</span>
+              </div>
+            </div>
+            <div class="hero-actions">
+              <a href="#ai" class="link-button">打开员工助手</a>
+              <a href="#leave-history" class="link-button secondary-link">查看请假记录</a>
+            </div>
           </article>
 
           <article class="panel">
             <div class="panel-header">
               <div>
                 <h3>我的假期余额</h3>
-                <p>员工端不传 employeeName。</p>
+                <p>员工端自动使用当前登录身份查询。</p>
               </div>
               <button class="secondary" @click="fetchMyBalance">查询</button>
             </div>
@@ -863,28 +953,6 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
             </div>
           </div>
           <p v-else class="empty">当前筛选条件下暂无请假记录。</p>
-        </section>
-
-        <section id="handbook" class="panel">
-          <div class="panel-header">
-            <div>
-              <h3>员工手册问答</h3>
-              <p>Dify 知识库问答，可连接员工手册应用。</p>
-            </div>
-            <div class="button-group">
-              <button class="secondary" @click="askHandbook">普通提问</button>
-              <button @click="askHandbookStream" :disabled="handbookStreaming">
-                {{ handbookStreaming ? '输出中' : '流式提问' }}
-              </button>
-            </div>
-          </div>
-          <textarea v-model="handbookQuestion" rows="3"></textarea>
-          <div v-if="handbookError" class="inline-alert">{{ handbookError }}</div>
-          <div v-if="handbookAnswer" class="answer-box">
-            <strong>回答</strong>
-            <p>{{ handbookAnswer.answer }}</p>
-            <small>{{ handbookAnswer.source }}<template v-if="handbookAnswer.conversationId"> · {{ handbookAnswer.conversationId }}</template></small>
-          </div>
         </section>
 
         <section v-if="isHr" id="hr" class="dashboard-grid">
@@ -953,19 +1021,25 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
         <section id="ai" class="panel">
           <div class="panel-header">
             <div>
-              <h3>员工 Agent 助手</h3>
-              <p>同一会话支持请假申请、确认、取消和员工业务查询；MCP Agent 会真实调用 HR MCP Server。</p>
+              <h3>智能员工助手</h3>
+              <p>支持查假期、查考勤、制度问答和请假确认；默认走 MCP Tool Calling 链路。</p>
             </div>
-            <label>
-              调用模式
-              <select v-model="employeeAgentMode">
-                <option value="LOCAL">本地 Agent</option>
-                <option value="MCP">MCP Agent</option>
-              </select>
-            </label>
           </div>
 
+          <div class="assistant-observability-layout">
           <div class="assistant-shell">
+            <details class="debug-options">
+              <summary>调试选项</summary>
+              <label>
+                调用模式
+                <select v-model="employeeAgentMode">
+                  <option value="MCP">MCP Agent</option>
+                  <option value="LOCAL">本地 Agent</option>
+                </select>
+              </label>
+              <p>MCP Agent 会经过 Spring AI Tool Calling，再调用 HR MCP Server；本地 Agent 仅用于对照旧链路。</p>
+            </details>
+
             <div class="quick-prompts" aria-label="Agent 快捷问题">
               <button class="secondary" @click="useAiChatPrompt('帮我请明天下午年假')">申请年假</button>
               <button class="secondary" @click="chat('确认')">确认</button>
@@ -979,10 +1053,15 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
                 v-for="message in aiChatMessages"
                 :key="message.id"
                 class="assistant-message"
-                :class="message.role"
+                :class="[message.role, {
+                  selectable: Boolean(message.observation),
+                  selected: selectedObservationMessage?.id === message.id
+                }]"
+                @click="selectObservation(message)"
               >
                 <strong>{{ message.role === 'user' ? session.employeeName : 'Agent 助手' }}</strong>
                 <p>{{ message.content }}</p>
+                <small v-if="message.observation">点击查看本次 Agent 调用链</small>
               </div>
 
               <article v-if="aiChatPendingLeave" class="leave-confirmation">
@@ -1026,6 +1105,83 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
             </form>
           </div>
 
+          <aside class="observation-panel" aria-label="Agent 观测面板">
+            <div class="observation-panel-header">
+              <div>
+                <h3>Agent 观测</h3>
+                <p>{{ observationTitle(selectedObservationMessage) }}</p>
+              </div>
+              <span
+                v-if="selectedObservation"
+                class="observation-status"
+                :class="selectedObservation.status.toLowerCase()"
+              >
+                {{ statusText(selectedObservation.status) }}
+              </span>
+            </div>
+
+            <div v-if="selectedObservation" class="observation-content">
+              <div class="observation-meta">
+                <span>requestId</span>
+                <strong>{{ selectedObservation.requestId }}</strong>
+                <span>总耗时</span>
+                <strong>{{ selectedObservation.totalDurationMs }} ms</strong>
+              </div>
+
+              <div v-if="selectedObservation.summarySteps.length" class="observation-card">
+                <strong>摘要</strong>
+                <ul>
+                  <li v-for="summary in selectedObservation.summarySteps" :key="summary">{{ summary }}</li>
+                </ul>
+              </div>
+
+              <ol class="agent-steps">
+                <li v-for="step in selectedObservation.steps" :key="step.agentName + step.durationMs">
+                  <div class="agent-step-header">
+                    <strong>{{ step.agentName }}</strong>
+                    <span :class="['observation-status', step.status.toLowerCase()]">
+                      {{ statusText(step.status) }} · {{ step.durationMs }} ms
+                    </span>
+                  </div>
+                  <p v-if="step.summary">{{ step.summary }}</p>
+
+                  <div v-for="tool in step.toolCalls" :key="tool.toolName + tool.traceId" class="tool-card">
+                    <div class="tool-card-title">
+                      <strong>{{ tool.toolName }}</strong>
+                      <span :class="['observation-status', tool.status.toLowerCase()]">
+                        {{ statusText(tool.status) }} · {{ tool.durationMs }} ms
+                      </span>
+                    </div>
+                    <small v-if="tool.traceId">traceId：{{ tool.traceId }}</small>
+                    <small v-if="tool.errorCode">错误码：{{ tool.errorCode }}</small>
+                    <small v-if="tool.evidenceSource">证据：{{ tool.evidenceSource }}</small>
+
+                    <dl v-if="summaryEntries(tool.inputSummary).length" class="summary-dl">
+                      <template v-for="[key, value] in summaryEntries(tool.inputSummary)" :key="'in-' + key">
+                        <dt>{{ key }}</dt>
+                        <dd>{{ value }}</dd>
+                      </template>
+                    </dl>
+                    <dl v-if="summaryEntries(tool.resultSummary).length" class="summary-dl">
+                      <template v-for="[key, value] in summaryEntries(tool.resultSummary)" :key="'out-' + key">
+                        <dt>{{ key }}</dt>
+                        <dd>{{ value }}</dd>
+                      </template>
+                    </dl>
+                  </div>
+                </li>
+              </ol>
+
+              <div v-if="selectedObservation.decision" class="observation-card">
+                <strong>最终判断：{{ selectedObservation.decision.outcome }}</strong>
+                <p>{{ selectedObservation.decision.basis }}</p>
+                <small>{{ selectedObservation.decision.needsHumanConfirmation ? '建议人工确认' : '不需要人工确认' }}</small>
+              </div>
+            </div>
+            <p v-else class="empty">发送一次 MCP Agent 或 Multi-Agent 问题后，这里会显示模型选择了哪些 Agent 和 Tool。</p>
+          </aside>
+          </div>
+
           <div v-if="chatError" class="inline-alert">{{ chatError }}</div>
           <div v-if="chatLeaveApplications.length" class="leave-table compact-table">
             <div v-for="item in chatLeaveApplications" :key="item.applyNo" class="leave-row">
@@ -1038,7 +1194,55 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
           </div>
         </section>
 
-        <section id="dify-workflow" class="panel">
+        <section id="advanced" class="panel advanced-panel">
+          <div class="panel-header">
+            <div>
+              <h3>高级/调试</h3>
+              <p>这里保留制度问答、Dify 对照链路、旧 Workflow 和原始身份数据，日常使用可以先收起。</p>
+            </div>
+            <button class="secondary" @click="showAdvancedTools = !showAdvancedTools">
+              {{ showAdvancedTools ? '收起' : '展开' }}
+            </button>
+          </div>
+
+          <p v-if="!showAdvancedTools" class="empty">高级工具已收起，需要排查链路或对照旧能力时再展开。</p>
+
+          <div v-else class="advanced-grid">
+            <section id="handbook" class="panel compact-panel">
+              <div class="panel-header">
+                <div>
+                  <h3>员工手册问答</h3>
+                  <p>Dify 知识库问答，可连接员工手册应用。</p>
+                </div>
+                <div class="button-group">
+                  <button class="secondary" @click="askHandbook">普通提问</button>
+                  <button @click="askHandbookStream" :disabled="handbookStreaming">
+                    {{ handbookStreaming ? '输出中' : '流式提问' }}
+                  </button>
+                </div>
+              </div>
+              <textarea v-model="handbookQuestion" rows="3"></textarea>
+              <div v-if="handbookError" class="inline-alert">{{ handbookError }}</div>
+              <div v-if="handbookAnswer" class="answer-box">
+                <strong>回答</strong>
+                <p>{{ handbookAnswer.answer }}</p>
+                <small>{{ handbookAnswer.source }}<template v-if="handbookAnswer.conversationId"> · {{ handbookAnswer.conversationId }}</template></small>
+              </div>
+            </section>
+
+            <section class="panel compact-panel">
+              <div class="panel-header">
+                <div>
+                  <h3>当前员工原始数据</h3>
+                  <p>用于确认 JWT 或 Gateway 透传头识别出的员工身份。</p>
+                </div>
+                <button class="secondary" @click="fetchMe">刷新</button>
+              </div>
+              <pre v-if="me">{{ pretty(me) }}</pre>
+              <p v-else class="empty">尚未加载当前员工信息。</p>
+            </section>
+
+            <section id="dify-workflow" class="panel compact-panel">
           <div class="panel-header">
             <div>
               <h3>员工 AI 助手</h3>
@@ -1140,7 +1344,7 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
           <div v-if="difyWorkflowError" class="inline-alert">{{ difyWorkflowError }}</div>
         </section>
 
-        <section id="workflow" class="panel">
+            <section id="workflow" class="panel compact-panel">
           <div class="panel-header">
             <div>
               <h3>请假 AI Workflow</h3>
@@ -1166,6 +1370,8 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
               </li>
             </ol>
             <pre>{{ pretty(workflowResult.result) }}</pre>
+          </div>
+            </section>
           </div>
         </section>
       </template>

@@ -24,12 +24,12 @@ public class EmployeeHandbookController {
     @PostMapping("/ask")
     public KnowledgeAskResponse ask(@Valid @RequestBody KnowledgeAskRequest request) {
         AuthenticatedUser user = currentUserService.currentUser();
-        return knowledgeBaseService.ask(request.getQuestion(), user.username());
+        return knowledgeBaseService.ask(request.getQuestion(), user.employeeName());
     }
 
     @PostMapping("/ask/stream")
     public SseEmitter streamAsk(@Valid @RequestBody KnowledgeAskRequest request) {
         AuthenticatedUser user = currentUserService.currentUser();
-        return knowledgeBaseService.streamAsk(request.getQuestion(), user.username());
+        return knowledgeBaseService.streamAsk(request.getQuestion(), user.employeeName());
     }
 }

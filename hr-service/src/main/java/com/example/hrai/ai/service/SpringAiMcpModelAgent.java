@@ -4,6 +4,10 @@ import com.example.hrai.ai.mcp.client.HrMcpCaller;
 import com.example.hrai.ai.mcp.dto.PendingLeaveMcpResult;
 import com.example.hrai.ai.memory.AgentMemoryService;
 import com.example.hrai.ai.memory.PendingLeaveApplyDTO;
+import com.example.hrai.ai.observation.AgentObservationBuilder;
+import com.example.hrai.ai.observation.AgentObservationSanitizer;
+import com.example.hrai.ai.observation.AgentObservationStatus;
+import com.example.hrai.ai.observation.AgentToolObservation;
 import com.example.hrai.ai.security.ToolTokenService;
 import com.example.hrai.ai.tool.ToolResult;
 import com.example.hrai.dto.ai.AiChatResponse;
@@ -53,6 +57,8 @@ public class SpringAiMcpModelAgent implements McpModelAgent {
     private final AgentMemoryService memoryService;
     private final Clock clock;
     private final AgentToolCallLogger toolCallLogger = new AgentToolCallLogger();
+    private final LeaveBalanceReplyPostProcessor leaveBalanceReplyPostProcessor = new LeaveBalanceReplyPostProcessor();
+    private final AgentObservationSanitizer observationSanitizer = new AgentObservationSanitizer();
 
     public SpringAiMcpModelAgent(
             ObjectProvider<ChatModel> chatModelProvider,
@@ -79,7 +85,13 @@ public class SpringAiMcpModelAgent implements McpModelAgent {
         }
         AuthenticatedUser user = currentUserService.currentUser();
         String token = toolTokenService.createToken(user, TENANT_ID, SCOPES);
-        ModelFacingMcpTools tools = new ModelFacingMcpTools(user, token, sessionId, message);
+        AgentObservationBuilder observationBuilder = new AgentObservationBuilder();
+        AgentObservationBuilder.AgentStepHandle modelStep = observationBuilder.startAgent(
+                "SpringAiMcpModelAgent", "模型理解意图并选择 MCP Tool"
+        );
+        ModelFacingMcpTools tools = new ModelFacingMcpTools(
+                user, token, sessionId, message, observationBuilder, modelStep
+        );
         try {
             /*
              * 这是模型自主决策与 Tool Calling 的执行入口：
@@ -96,10 +108,12 @@ public class SpringAiMcpModelAgent implements McpModelAgent {
                     .tools(tools)
                     .call()
                     .content();
+            reply = leaveBalanceReplyPostProcessor.refine(message, reply, tools.toolResults);
             Object data = memoryService.getPendingLeave(user.userId(), sessionId)
                     .map(PendingLeaveMcpResult::from)
                     .orElse(null);
-            return new AiChatResponse("MCP_MODEL_RESPONSE", reply, data);
+            observationBuilder.finishAgent(modelStep, AgentObservationStatus.SUCCESS, "模型已生成最终回复");
+            return new AiChatResponse("MCP_MODEL_RESPONSE", reply, data, observationBuilder.build());
         } catch (BusinessException exception) {
             throw exception;
         } catch (RuntimeException exception) {
@@ -113,13 +127,25 @@ public class SpringAiMcpModelAgent implements McpModelAgent {
         private final String token;
         private final String sessionId;
         private final String originalUserMessage;
+        private final AgentObservationBuilder observationBuilder;
+        private final AgentObservationBuilder.AgentStepHandle modelStep;
         private final AgentToolCallGuard callGuard = new AgentToolCallGuard(MAX_TOOL_CALLS_PER_REQUEST);
+        private final Map<String, ToolResult<Object>> toolResults = new LinkedHashMap<>();
 
-        private ModelFacingMcpTools(AuthenticatedUser user, String token, String sessionId, String originalUserMessage) {
+        private ModelFacingMcpTools(
+                AuthenticatedUser user,
+                String token,
+                String sessionId,
+                String originalUserMessage,
+                AgentObservationBuilder observationBuilder,
+                AgentObservationBuilder.AgentStepHandle modelStep
+        ) {
             this.user = user;
             this.token = token;
             this.sessionId = sessionId;
             this.originalUserMessage = originalUserMessage;
+            this.observationBuilder = observationBuilder;
+            this.modelStep = modelStep;
         }
 
         @Tool(name = "query_leave_balance", description = "查询当前员工的假期余额")
@@ -180,14 +206,62 @@ public class SpringAiMcpModelAgent implements McpModelAgent {
             // 安全字段只能由可信后端注入，禁止模型自行指定调用身份和会话边界。
             secured.put("toolToken", token);
             secured.put("sessionId", sessionId);
+            long startedAtNanos = System.nanoTime();
             try {
                 ToolResult<Object> result = hrMcpCaller.call(toolName, secured);
+                toolResults.put(toolName, result);
+                observeTool(toolName, modelArguments, result, elapsedMillis(startedAtNanos));
                 toolCallLogger.success(logContext, result);
                 return result;
             } catch (RuntimeException exception) {
+                observeToolFailure(toolName, modelArguments, exception, elapsedMillis(startedAtNanos));
                 toolCallLogger.failure(logContext, exception);
                 throw exception;
             }
+        }
+
+        private void observeTool(
+                String toolName,
+                Map<String, Object> modelArguments,
+                ToolResult<Object> result,
+                long durationMs
+        ) {
+            observationBuilder.addToolCall(modelStep, new AgentToolObservation(
+                    toolName,
+                    result.success() ? AgentObservationStatus.SUCCESS : AgentObservationStatus.FAILED,
+                    durationMs,
+                    result.traceId(),
+                    observationSanitizer.sanitizeInput(toolName, modelArguments),
+                    observationSanitizer.sanitizeResult(toolName, result),
+                    observationSanitizer.evidenceSource(toolName, result),
+                    result.success() ? null : result.code()
+            ));
+        }
+
+        private void observeToolFailure(
+                String toolName,
+                Map<String, Object> modelArguments,
+                RuntimeException exception,
+                long durationMs
+        ) {
+            String errorCode = exception instanceof BusinessException businessException
+                    ? businessException.getCode()
+                    : "MCP_TOOL_CALL_FAILED";
+            ToolResult<Object> failure = ToolResult.failure(null, errorCode, "工具调用失败");
+            observationBuilder.addToolCall(modelStep, new AgentToolObservation(
+                    toolName,
+                    AgentObservationStatus.FAILED,
+                    durationMs,
+                    null,
+                    observationSanitizer.sanitizeInput(toolName, modelArguments),
+                    observationSanitizer.sanitizeResult(toolName, failure),
+                    null,
+                    errorCode
+            ));
+        }
+
+        private long elapsedMillis(long startNanos) {
+            return Math.max(0, (System.nanoTime() - startNanos) / 1_000_000);
         }
     }
 }
