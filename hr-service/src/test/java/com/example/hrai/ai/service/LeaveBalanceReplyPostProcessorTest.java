@@ -50,4 +50,24 @@ class LeaveBalanceReplyPostProcessorTest {
 
         assertThat(reply).isEqualTo(modelReply);
     }
+
+    @Test
+    void shouldKeepPendingReplyWhenLeavePendingWasCreated() {
+        String pendingReply = "已为您创建一条待确认的请假申请，请回复“确认”或“取消”。";
+
+        String reply = postProcessor.refine(
+                "帮我请明天的年假",
+                pendingReply,
+                Map.of(
+                        "query_leave_balance", ToolResult.success("ok",
+                                Map.of("annualLeaveBalance", 5, "sickLeaveBalance", 3)),
+                        "create_leave_pending", ToolResult.success("ok",
+                                Map.of("leaveType", "ANNUAL",
+                                        "startTime", "2026-06-29 09:00:00",
+                                        "endTime", "2026-06-29 18:00:00"))
+                )
+        );
+
+        assertThat(reply).isEqualTo(pendingReply);
+    }
 }

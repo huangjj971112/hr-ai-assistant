@@ -38,8 +38,9 @@ public class McpAttendanceAgent extends AbstractMcpSubAgent implements Attendanc
         // MCP Tool 参数仍由后端注入 toolToken，模型和前端不能伪造调用身份。
         ToolResult<Object> result = hrMcpCaller.call("query_attendance", Map.of(
                 "toolToken", toolToken(SCOPES),
-                "startDate", dateRange.startDate(),
-                "endDate", dateRange.endDate()
+                // MCP 参数按 JSON 传输，日期统一转成 yyyy-MM-dd，避免 LocalDate 在协议层绑定失败。
+                "startDate", dateRange.startDate().toString(),
+                "endDate", dateRange.endDate().toString()
         ));
         return new AttendanceAgentResult(result.success(), records(result.data()), lateCount(result.data()), result.traceId());
     }

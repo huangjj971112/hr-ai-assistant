@@ -62,7 +62,7 @@ class McpSubAgentTest {
         LocalDate startDate = LocalDate.of(2026, 6, 15);
         LocalDate endDate = LocalDate.of(2026, 6, 16);
         when(hrMcpCaller.call("query_attendance", Map.of("toolToken", "tool-token",
-                "startDate", startDate, "endDate", endDate)))
+                "startDate", "2026-06-15", "endDate", "2026-06-16")))
                 .thenReturn(ToolResult.success("trace-attendance", "ok",
                         List.of(Map.of("status", "LATE"), Map.of("remark", "迟到 10 分钟"))));
 

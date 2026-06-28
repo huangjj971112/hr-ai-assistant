@@ -16,8 +16,13 @@ import java.util.Optional;
 class LeaveBalanceReplyPostProcessor {
 
     private static final String BALANCE_TOOL = "query_leave_balance";
+    private static final String CREATE_PENDING_TOOL = "create_leave_pending";
 
     String refine(String userMessage, String modelReply, Map<String, ToolResult<Object>> toolResults) {
+        if (hasSuccessfulPending(toolResults)) {
+            return modelReply;
+        }
+
         ToolResult<Object> balanceResult = toolResults.get(BALANCE_TOOL);
         if (balanceResult == null || !balanceResult.success()) {
             return modelReply;
@@ -37,6 +42,11 @@ class LeaveBalanceReplyPostProcessor {
             return "您的病假余额为 " + balance.sickLeaveBalance() + " 天。";
         }
         return modelReply;
+    }
+
+    private boolean hasSuccessfulPending(Map<String, ToolResult<Object>> toolResults) {
+        ToolResult<Object> pendingResult = toolResults.get(CREATE_PENDING_TOOL);
+        return pendingResult != null && pendingResult.success();
     }
 
     private record Balance(int annualLeaveBalance, int sickLeaveBalance) {

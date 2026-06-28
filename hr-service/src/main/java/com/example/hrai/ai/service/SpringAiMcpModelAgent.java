@@ -58,6 +58,7 @@ public class SpringAiMcpModelAgent implements McpModelAgent {
     private final Clock clock;
     private final AgentToolCallLogger toolCallLogger = new AgentToolCallLogger();
     private final LeaveBalanceReplyPostProcessor leaveBalanceReplyPostProcessor = new LeaveBalanceReplyPostProcessor();
+    private final PendingLeaveReplyPostProcessor pendingLeaveReplyPostProcessor = new PendingLeaveReplyPostProcessor();
     private final AgentObservationSanitizer observationSanitizer = new AgentObservationSanitizer();
 
     public SpringAiMcpModelAgent(
@@ -109,6 +110,8 @@ public class SpringAiMcpModelAgent implements McpModelAgent {
                     .call()
                     .content();
             reply = leaveBalanceReplyPostProcessor.refine(message, reply, tools.toolResults);
+            // 创建 pending 属于写操作前置步骤，最终答复必须明确展示待确认内容和确认/取消入口。
+            reply = pendingLeaveReplyPostProcessor.refine(reply, tools.toolResults);
             Object data = memoryService.getPendingLeave(user.userId(), sessionId)
                     .map(PendingLeaveMcpResult::from)
                     .orElse(null);
