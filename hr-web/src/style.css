@@ -651,6 +651,7 @@ pre {
 }
 
 .observation-panel-header,
+.observation-card-header,
 .agent-step-header,
 .tool-card-title {
   display: flex;
@@ -763,6 +764,23 @@ pre {
 .summary-dl dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.observation-raw {
+  margin-top: 10px;
+}
+
+.observation-raw summary {
+  color: #526071;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.observation-raw pre {
+  margin-top: 8px;
+  max-height: 180px;
+  overflow: auto;
 }
 
 .leave-confirmation {

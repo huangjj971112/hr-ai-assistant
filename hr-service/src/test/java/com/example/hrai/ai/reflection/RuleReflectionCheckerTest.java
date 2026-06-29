@@ -71,6 +71,8 @@ class RuleReflectionCheckerTest {
                 1,
                 List.of("测试步骤"),
                 List.of(step),
+                null,
+                null,
                 null
         );
         return new ReflectionContext("用户问题", null, snapshot, finalAnswer, null);

@@ -128,12 +128,31 @@ type AgentDecisionObservation = {
   needsHumanConfirmation: boolean;
 };
 
+type AgentPlannerObservation = {
+  plannerType: string;
+  traceId?: string | null;
+  fallbackReason?: string | null;
+  summary?: string | null;
+};
+
+type AgentReflectionObservation = {
+  traceId?: string | null;
+  ruleAction?: string | null;
+  action: string;
+  reason?: string | null;
+  needRetry: boolean;
+  needReplan: boolean;
+  llmRawOutput?: string | null;
+};
+
 type AgentObservationSnapshot = {
   requestId: string;
   status: AgentObservationStatus;
   totalDurationMs: number;
   summarySteps: string[];
   steps: AgentObservationStep[];
+  planner?: AgentPlannerObservation | null;
+  reflection?: AgentReflectionObservation | null;
   decision?: AgentDecisionObservation | null;
 };
 
@@ -763,6 +782,25 @@ function statusText(status: AgentObservationStatus) {
   return names[status] ?? status;
 }
 
+function plannerTypeText(type?: string | null) {
+  const names: Record<string, string> = {
+    LLM: 'LLM Planner',
+    RULE: 'Rule Planner'
+  };
+  return type ? names[type] ?? type : '未知 Planner';
+}
+
+function reflectionActionText(action?: string | null) {
+  const names: Record<string, string> = {
+    PASS: '通过',
+    RETRY: '建议重试',
+    REPLAN: '建议重新规划',
+    ASK_USER: '追问用户',
+    FAIL: '失败'
+  };
+  return action ? names[action] ?? action : '未知动作';
+}
+
 function summaryEntries(summary: Record<string, string | number | boolean>) {
   return Object.entries(summary ?? {});
 }
@@ -1140,6 +1178,49 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
                 <strong>{{ selectedObservation.requestId }}</strong>
                 <span>总耗时</span>
                 <strong>{{ selectedObservation.totalDurationMs }} ms</strong>
+              </div>
+
+              <div v-if="selectedObservation.planner" class="observation-card">
+                <div class="observation-card-header">
+                  <strong>Planner：{{ plannerTypeText(selectedObservation.planner.plannerType) }}</strong>
+                  <span v-if="selectedObservation.planner.fallbackReason" class="observation-status partial">
+                    已回退
+                  </span>
+                </div>
+                <dl class="summary-dl">
+                  <dt>traceId</dt>
+                  <dd>{{ selectedObservation.planner.traceId || '-' }}</dd>
+                  <dt>计划摘要</dt>
+                  <dd>{{ selectedObservation.planner.summary || '-' }}</dd>
+                  <dt>fallback</dt>
+                  <dd>{{ selectedObservation.planner.fallbackReason || '无' }}</dd>
+                </dl>
+              </div>
+
+              <div v-if="selectedObservation.reflection" class="observation-card">
+                <div class="observation-card-header">
+                  <strong>Reflection：{{ reflectionActionText(selectedObservation.reflection.action) }}</strong>
+                  <span :class="['observation-status', selectedObservation.reflection.action === 'PASS' ? 'success' : 'partial']">
+                    {{ selectedObservation.reflection.action }}
+                  </span>
+                </div>
+                <dl class="summary-dl">
+                  <dt>traceId</dt>
+                  <dd>{{ selectedObservation.reflection.traceId || '-' }}</dd>
+                  <dt>规则动作</dt>
+                  <dd>{{ reflectionActionText(selectedObservation.reflection.ruleAction) }}</dd>
+                  <dt>原因</dt>
+                  <dd>{{ selectedObservation.reflection.reason || '-' }}</dd>
+                  <dt>retry/replan</dt>
+                  <dd>
+                    {{ selectedObservation.reflection.needRetry ? '需要重试' : '无需重试' }} /
+                    {{ selectedObservation.reflection.needReplan ? '需要重规划' : '无需重规划' }}
+                  </dd>
+                </dl>
+                <details v-if="selectedObservation.reflection.llmRawOutput" class="observation-raw">
+                  <summary>查看 LLM Reflection 原始输出</summary>
+                  <pre>{{ selectedObservation.reflection.llmRawOutput }}</pre>
+                </details>
               </div>
 
               <div v-if="selectedObservation.summarySteps.length" class="observation-card">

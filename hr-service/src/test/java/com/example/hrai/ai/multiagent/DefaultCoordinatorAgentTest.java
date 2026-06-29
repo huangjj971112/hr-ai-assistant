@@ -111,6 +111,10 @@ class DefaultCoordinatorAgentTest {
                 .containsExactly("PolicyAgent", "AttendanceAgent", "SalaryAgent");
         assertThat(response.getObservation().steps().get(1).toolCalls().get(0).resultSummary())
                 .containsEntry("lateCount", 2);
+        assertThat(response.getObservation().planner().plannerType()).isEqualTo("RULE");
+        assertThat(response.getObservation().planner().fallbackReason()).isEqualTo("IllegalStateException");
+        assertThat(response.getObservation().reflection().action()).isEqualTo("PASS");
+        assertThat(response.getObservation().reflection().reason()).isEqualTo("测试放行");
         assertThat(response.getObservation().decision().needsHumanConfirmation()).isTrue();
         verify(leaveAgent, never()).evaluate(any(), any());
     }

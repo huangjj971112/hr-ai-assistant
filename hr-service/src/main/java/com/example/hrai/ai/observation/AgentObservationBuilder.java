@@ -18,6 +18,8 @@ public final class AgentObservationBuilder {
     private final long startedAtNanos = System.nanoTime();
     private final List<MutableAgentStep> orderedSteps = new ArrayList<>();
     private final Map<String, MutableAgentStep> stepsById = new LinkedHashMap<>();
+    private AgentPlannerObservation planner;
+    private AgentReflectionObservation reflection;
     private AgentDecisionObservation decision;
 
     /**
@@ -67,6 +69,20 @@ public final class AgentObservationBuilder {
     }
 
     /**
+     * 记录本次请求采用的 Planner 信息。
+     */
+    public void planner(AgentPlannerObservation planner) {
+        this.planner = planner;
+    }
+
+    /**
+     * 记录 Hybrid Reflection 的最终检查结果。
+     */
+    public void reflection(AgentReflectionObservation reflection) {
+        this.reflection = reflection;
+    }
+
+    /**
      * 构建与后续修改隔离的不可变快照。
      */
     public AgentObservationSnapshot build() {
@@ -83,6 +99,8 @@ public final class AgentObservationBuilder {
                 elapsedMillis(startedAtNanos),
                 summarySteps,
                 steps,
+                planner,
+                reflection,
                 decision
         );
     }

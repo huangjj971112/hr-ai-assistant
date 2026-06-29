@@ -33,6 +33,11 @@ public class LlmReflectionChecker {
             - 多 Agent 结果是否矛盾
             - 最终回答是否准确
             - 是否需要 REPLAN / ASK_USER / PASS
+            注意：
+            - Tool 返回结果是系统事实，用户原始问题只代表意图或用户自述。
+            - 用户自述与 Tool 查询结果不一致时，不要直接判定为执行矛盾或 FAIL。
+            - 如果最终答案已经说明“以系统记录/HR 审核为准”，应优先 PASS。
+            - 只有 Tool 之间互相矛盾、关键 Tool 失败、或最终答案明显编造事实时，才使用 FAIL。
             只输出 JSON，不要 Markdown，不要代码块。
             action 只能是 PASS、RETRY、REPLAN、ASK_USER、FAIL。
             JSON 格式：
@@ -116,7 +121,7 @@ public class LlmReflectionChecker {
         String userMessage = root.path("userMessage").asText("");
         boolean needRetry = root.path("needRetry").asBoolean(action == ReflectionAction.RETRY);
         boolean needReplan = root.path("needReplan").asBoolean(action == ReflectionAction.REPLAN);
-        return new ReflectionResult(action, reason, userMessage, needRetry, needReplan);
+        return new ReflectionResult(action, reason, userMessage, needRetry, needReplan, "", null, "");
     }
 
     private String requiredText(JsonNode root, String fieldName) {

@@ -4,6 +4,8 @@ import com.example.hrai.ai.observation.AgentDecisionObservation;
 import com.example.hrai.ai.observation.AgentObservationBuilder;
 import com.example.hrai.ai.observation.AgentObservationSanitizer;
 import com.example.hrai.ai.observation.AgentObservationStatus;
+import com.example.hrai.ai.observation.AgentPlannerObservation;
+import com.example.hrai.ai.observation.AgentReflectionObservation;
 import com.example.hrai.ai.observation.AgentToolObservation;
 import com.example.hrai.ai.reflection.ReflectionAction;
 import com.example.hrai.ai.reflection.ReflectionContext;
@@ -80,6 +82,12 @@ public class DefaultCoordinatorAgent implements CoordinatorAgent {
         AgentDispatchPlan plan = planningResult.plan();
         AgentInvocationContext context = new AgentInvocationContext(message, sessionId);
         AgentObservationBuilder observationBuilder = new AgentObservationBuilder();
+        observationBuilder.planner(new AgentPlannerObservation(
+                planningResult.plannerType().name(),
+                planningResult.traceId(),
+                planningResult.fallbackReason(),
+                plan.reason()
+        ));
 
         /*
          * 每个子 Agent 只在计划需要时执行，避免不必要的 MCP/模型/业务调用。
@@ -107,7 +115,23 @@ public class DefaultCoordinatorAgent implements CoordinatorAgent {
         ReflectionResult reflection = reflectionService.reflect(
                 new ReflectionContext(message, plan, observation, reply, result)
         );
-        return new AiChatResponse("MULTI_AGENT_RESPONSE", reflectedReply(reply, reflection), result, observation);
+        observationBuilder.reflection(reflectionObservation(reflection));
+        return new AiChatResponse(
+                "MULTI_AGENT_RESPONSE", reflectedReply(reply, reflection), result, observationBuilder.build()
+        );
+    }
+
+    private AgentReflectionObservation reflectionObservation(ReflectionResult reflection) {
+        // 将 Reflection 内部动作转成前端可展示的稳定字段，便于定位最终回复是否被反思层改写。
+        return new AgentReflectionObservation(
+                reflection.traceId(),
+                reflection.ruleAction() == null ? "" : reflection.ruleAction().name(),
+                reflection.action().name(),
+                reflection.reason(),
+                reflection.needRetry(),
+                reflection.needReplan(),
+                reflection.llmRawOutput()
+        );
     }
 
     private String reflectedReply(String reply, ReflectionResult reflection) {

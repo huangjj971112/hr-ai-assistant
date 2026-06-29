@@ -10,6 +10,8 @@ import java.util.List;
  * @param totalDurationMs 本次请求从开始到生成快照的总耗时，单位毫秒
  * @param summarySteps 面向用户可读的步骤摘要，只保留非空摘要
  * @param steps 按执行顺序排列的 Agent 步骤观测
+ * @param planner Planner 观测信息；单 Agent 模型链路没有 Planner 时为空
+ * @param reflection Hybrid Reflection 观测信息；尚未执行反思时为空
  * @param decision Coordinator 或模型最终决策；没有决策时为空
  */
 public record AgentObservationSnapshot(
@@ -18,6 +20,8 @@ public record AgentObservationSnapshot(
         long totalDurationMs,
         List<String> summarySteps,
         List<AgentObservationStep> steps,
+        AgentPlannerObservation planner,
+        AgentReflectionObservation reflection,
         AgentDecisionObservation decision
 ) {
 

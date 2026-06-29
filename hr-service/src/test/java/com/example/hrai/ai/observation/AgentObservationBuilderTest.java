@@ -95,6 +95,14 @@ class AgentObservationBuilderTest {
         builder.addToolCall(handle, tool("query_leave_policy", "trace-1"));
         builder.finishAgent(handle, AgentObservationStatus.SUCCESS, "第一步完成");
         AgentDecisionObservation decision = new AgentDecisionObservation("ALLOW", "制度允许", true);
+        AgentPlannerObservation planner = new AgentPlannerObservation(
+                "LLM", "planner-trace", null, "需要查询制度"
+        );
+        AgentReflectionObservation reflection = new AgentReflectionObservation(
+                "reflection-trace", "PASS", "PASS", "结果完整", false, false, ""
+        );
+        builder.planner(planner);
+        builder.reflection(reflection);
         builder.decision(decision);
 
         AgentObservationSnapshot first = builder.build();
@@ -104,6 +112,8 @@ class AgentObservationBuilderTest {
         AgentObservationSnapshot second = builder.build();
 
         assertThat(first.decision()).isEqualTo(decision);
+        assertThat(first.planner()).isEqualTo(planner);
+        assertThat(first.reflection()).isEqualTo(reflection);
         assertThat(first.steps()).hasSize(1);
         assertThat(first.steps().get(0).toolCalls()).hasSize(1);
         assertThat(first.summarySteps()).containsExactly("第一步完成");

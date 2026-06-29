@@ -7,6 +7,7 @@ import com.example.hrai.ai.memory.PendingLeaveApplyDTO;
 import com.example.hrai.ai.observation.AgentObservationBuilder;
 import com.example.hrai.ai.observation.AgentObservationSanitizer;
 import com.example.hrai.ai.observation.AgentObservationStatus;
+import com.example.hrai.ai.observation.AgentReflectionObservation;
 import com.example.hrai.ai.observation.AgentToolObservation;
 import com.example.hrai.ai.reflection.ReflectionAction;
 import com.example.hrai.ai.reflection.ReflectionContext;
@@ -191,8 +192,22 @@ public class SpringAiMcpModelAgent implements McpModelAgent {
         ReflectionResult reflection = reflectionService.reflect(
                 new ReflectionContext(originalMessage, null, observation, reply, data)
         );
+        observationBuilder.reflection(reflectionObservation(reflection));
         String finalReply = reflectedReply(reply, reflection);
-        return new AiChatResponse("MCP_MODEL_RESPONSE", finalReply, data, observation);
+        return new AiChatResponse("MCP_MODEL_RESPONSE", finalReply, data, observationBuilder.build());
+    }
+
+    private AgentReflectionObservation reflectionObservation(ReflectionResult reflection) {
+        // 单 Agent MCP 链路没有 Planner，但仍需要把 Hybrid Reflection 结果展示给前端。
+        return new AgentReflectionObservation(
+                reflection.traceId(),
+                reflection.ruleAction() == null ? "" : reflection.ruleAction().name(),
+                reflection.action().name(),
+                reflection.reason(),
+                reflection.needRetry(),
+                reflection.needReplan(),
+                reflection.llmRawOutput()
+        );
     }
 
     private String reflectedReply(String reply, ReflectionResult reflection) {

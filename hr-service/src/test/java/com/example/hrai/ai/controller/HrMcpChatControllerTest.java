@@ -71,6 +71,8 @@ class HrMcpChatControllerTest {
                 45L,
                 List.of("识别查询意图", "调用假期余额工具"),
                 List.of(step),
+                null,
+                null,
                 new AgentDecisionObservation("RETURN_RESULT", "工具返回有效余额", false)
         );
         AiChatResponse response = new AiChatResponse(
@@ -138,6 +140,8 @@ class HrMcpChatControllerTest {
                 45L,
                 summarySteps,
                 steps,
+                null,
+                null,
                 null
         );
 
@@ -177,6 +181,8 @@ class HrMcpChatControllerTest {
                 "request-001",
                 AgentObservationStatus.SUCCESS,
                 45L,
+                null,
+                null,
                 null,
                 null,
                 null
