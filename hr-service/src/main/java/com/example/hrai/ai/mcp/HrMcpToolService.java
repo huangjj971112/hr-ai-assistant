@@ -150,6 +150,10 @@ public class HrMcpToolService {
             if (!request.pendingId().equals(current.pendingId())) {
                 throw new BusinessException("PENDING_NOT_FOUND", "待确认申请不存在");
             }
+            if ("CANCELLED".equals(current.status())) {
+                // 取消是终态：即使前端或模型还拿着旧 pendingId，也不能再次确认提交。
+                throw new BusinessException("PENDING_ALREADY_CANCELLED", "该待确认申请已取消，不能再次提交");
+            }
             if ("SUBMITTED".equals(current.status())) {
                 // 相同幂等键返回首次提交结果；不同幂等键表示另一请求试图重复提交。
                 if (request.idempotencyKey().equals(current.idempotencyKey())) {

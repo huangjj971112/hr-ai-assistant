@@ -104,10 +104,30 @@ class DifyChatClientTest {
         assertThat(authorizationHeaders).containsExactly("Bearer chat-key", "Bearer chat-key", "Bearer agent-key");
     }
 
+    @Test
+    void shouldFallbackToAgentStreamingForStreamWhenConfiguredKeyIsNotChatApp() throws Exception {
+        startDifyStub();
+        DifyProperties properties = new DifyProperties();
+        properties.setEnabled(true);
+        properties.setBaseUrl("http://localhost:" + server.getAddress().getPort());
+        properties.setApiKey("chat-key");
+        properties.setAgentApiKey("agent-key");
+        properties.setAgentPath("/agent-chat-messages");
+        DifyChatClient client = new DifyChatClient(properties, new ObjectMapper());
+
+        client.streamAsk("我想请病假，会不会扣工资？", "zhangsan");
+
+        for (int i = 0; i < 20 && authorizationHeaders.size() < 2; i++) {
+            Thread.sleep(50);
+        }
+        assertThat(authorizationHeaders).contains("Bearer chat-key", "Bearer agent-key");
+    }
+
     private void startDifyStub() throws IOException {
         server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/workflows/run", this::handleWorkflowRun);
         server.createContext("/chat-messages", this::handleChatMessages);
+        server.createContext("/agent-chat-messages", this::handleAgentChatMessages);
         server.start();
     }
 
@@ -170,6 +190,20 @@ class DifyChatClientTest {
                 data: {"event":"message","answer":"病假工资按制度执行，"}
 
                 data: {"event":"message","answer":"可能按比例发放。","conversation_id":"conversation-1"}
+
+                data: [DONE]
+
+                """.getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(200, body.length);
+        exchange.getResponseBody().write(body);
+        exchange.close();
+    }
+
+    private void handleAgentChatMessages(HttpExchange exchange) throws IOException {
+        authorizationHeaders.add(exchange.getRequestHeaders().getFirst("Authorization"));
+        exchange.getResponseHeaders().set("Content-Type", "text/event-stream;charset=UTF-8");
+        byte[] body = """
+                data: {"event":"message","answer":"病假工资按制度执行。","conversation_id":"conversation-stream-1"}
 
                 data: [DONE]
 

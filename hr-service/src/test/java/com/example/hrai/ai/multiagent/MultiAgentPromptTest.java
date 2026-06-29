@@ -18,6 +18,8 @@ class MultiAgentPromptTest {
         assertThat(prompt).contains("只负责理解用户问题");
         assertThat(prompt).contains("pending + confirm");
         assertThat(prompt).contains("只输出 JSON 调度计划");
+        assertThat(prompt).contains("needPlan");
+        assertThat(prompt).contains("steps");
         assertThat(prompt).contains("SalaryAgent");
     }
 }

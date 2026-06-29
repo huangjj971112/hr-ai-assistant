@@ -316,6 +316,11 @@ public class DifyChatClient {
     }
 
     private void streamFromDify(String question, String user, SseEmitter emitter) {
+        if (!StringUtils.hasText(difyProperties.getApiKey())
+                && StringUtils.hasText(difyProperties.getAgentApiKey())) {
+            streamFromDifyAgent(question, user, emitter);
+            return;
+        }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("inputs", difyInputs(question, user, Map.of()));
         body.put("query", question);
@@ -349,8 +354,55 @@ public class DifyChatClient {
                     requestCallback,
                     responseExtractor
             );
+        } catch (HttpStatusCodeException exception) {
+            if (isNotChatApp(exception) && StringUtils.hasText(difyProperties.getAgentApiKey())) {
+                streamFromDifyAgent(question, user, emitter);
+                return;
+            }
+            throw new BusinessException("DIFY_REQUEST_FAILED", "调用 Dify 流式接口失败：" + exception.getMessage());
         } catch (RestClientException exception) {
             throw new BusinessException("DIFY_REQUEST_FAILED", "调用 Dify 流式接口失败：" + exception.getMessage());
+        }
+    }
+
+    private void streamFromDifyAgent(String question, String user, SseEmitter emitter) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("inputs", difyInputs(question, user, Map.of()));
+        body.put("query", question);
+        body.put("response_mode", "streaming");
+        body.put("user", user);
+
+        RequestCallback requestCallback = request -> {
+            request.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+            request.getHeaders().setBearerAuth(difyProperties.getAgentApiKey());
+            objectMapper.writeValue(request.getBody(), body);
+        };
+
+        ResponseExtractor<Void> responseExtractor = response -> {
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                throw new BusinessException("DIFY_AGENT_REQUEST_FAILED",
+                        "调用 Dify Agent 流式接口失败：" + response.getStatusCode());
+            }
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.getBody()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    handleDifyStreamLine(line, emitter);
+                }
+            }
+            sendDone(emitter);
+            return null;
+        };
+
+        try {
+            restTemplate.execute(
+                    difyProperties.getBaseUrl() + difyProperties.getAgentPath(),
+                    HttpMethod.POST,
+                    requestCallback,
+                    responseExtractor
+            );
+        } catch (RestClientException exception) {
+            throw new BusinessException("DIFY_AGENT_REQUEST_FAILED",
+                    "调用 Dify Agent 流式接口失败：" + exception.getMessage());
         }
     }
 
@@ -401,6 +453,11 @@ public class DifyChatClient {
         } catch (IOException ignored) {
             // Connection may already be closed by the browser.
         }
-        emitter.completeWithError(exception);
+        /*
+         * SSE 响应的 Content-Type 已经是 text/event-stream。这里不能再调用
+         * completeWithError，否则异常会回到 Spring MVC 全局异常处理器，导致它尝试
+         * 把 ApiResponse JSON 写进 SSE 响应，从而触发 HttpMessageNotWritableException。
+         */
+        emitter.complete();
     }
 }

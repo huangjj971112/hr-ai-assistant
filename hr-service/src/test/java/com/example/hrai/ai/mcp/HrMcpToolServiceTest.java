@@ -36,6 +36,7 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -197,6 +198,21 @@ class HrMcpToolServiceTest {
         );
 
         assertThat(result.code()).isEqualTo("IDEMPOTENCY_CONFLICT");
+        verify(leaveTools, never()).applyLeave(any(com.example.hrai.dto.leave.LeaveApplyRequest.class));
+    }
+
+    @Test
+    void shouldRejectCancelledPendingBeforeSubmitting() {
+        allowScopes("leave:apply");
+        when(agentMemoryService.getPendingLeave(1L, SESSION_ID))
+                .thenReturn(Optional.of(pending(false).withCancelled()));
+
+        var result = service.confirmLeaveApply(
+                new ConfirmLeaveApplyMcpRequest(TOKEN, SESSION_ID, "pending-1", 2, "request-1")
+        );
+
+        assertThat(result.code()).isEqualTo("PENDING_ALREADY_CANCELLED");
+        verify(agentMemoryService, never()).confirmPendingLeave(any(), any(), any(), anyInt());
         verify(leaveTools, never()).applyLeave(any(com.example.hrai.dto.leave.LeaveApplyRequest.class));
     }
 

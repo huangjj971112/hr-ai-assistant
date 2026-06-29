@@ -5,13 +5,20 @@ import com.example.hrai.ai.observation.AgentObservationBuilder;
 import com.example.hrai.ai.observation.AgentObservationSanitizer;
 import com.example.hrai.ai.observation.AgentObservationStatus;
 import com.example.hrai.ai.observation.AgentToolObservation;
+import com.example.hrai.ai.reflection.ReflectionAction;
+import com.example.hrai.ai.reflection.ReflectionContext;
+import com.example.hrai.ai.reflection.ReflectionResult;
+import com.example.hrai.ai.reflection.ReflectionService;
 import com.example.hrai.ai.tool.ToolResult;
 import com.example.hrai.dto.ai.AiChatResponse;
+import com.example.hrai.security.AuthenticatedUser;
+import com.example.hrai.security.CurrentUserService;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,27 +34,33 @@ import java.util.Map;
 @Service
 public class DefaultCoordinatorAgent implements CoordinatorAgent {
 
-    private final AgentDispatchPlanner planner;
+    private final LlmAgentDispatchPlanner planner;
+    private final CurrentUserService currentUserService;
     private final PolicyAgent policyAgent;
     private final AttendanceAgent attendanceAgent;
     private final LeaveAgent leaveAgent;
     private final SalaryAgent salaryAgent;
+    private final ReflectionService reflectionService;
     private final Clock clock;
     private final AgentObservationSanitizer observationSanitizer = new AgentObservationSanitizer();
 
     public DefaultCoordinatorAgent(
-            AgentDispatchPlanner planner,
+            LlmAgentDispatchPlanner planner,
+            CurrentUserService currentUserService,
             PolicyAgent policyAgent,
             AttendanceAgent attendanceAgent,
             LeaveAgent leaveAgent,
             SalaryAgent salaryAgent,
+            ReflectionService reflectionService,
             Clock clock
     ) {
         this.planner = planner;
+        this.currentUserService = currentUserService;
         this.policyAgent = policyAgent;
         this.attendanceAgent = attendanceAgent;
         this.leaveAgent = leaveAgent;
         this.salaryAgent = salaryAgent;
+        this.reflectionService = reflectionService;
         this.clock = clock;
     }
 
@@ -58,7 +71,13 @@ public class DefaultCoordinatorAgent implements CoordinatorAgent {
 
     @Override
     public AiChatResponse chat(String message, String sessionId) {
-        AgentDispatchPlan plan = planner.plan(message);
+        AuthenticatedUser user = currentUserService.currentUser();
+        /*
+         * Coordinator 优先让 LLM Planner 生成结构化执行计划。
+         * LLM 输出不可用或非法时，planner 内部会自动回退到原规则 Planner。
+         */
+        AgentDispatchPlanningResult planningResult = planner.plan(message, user, LocalDateTime.now(clock));
+        AgentDispatchPlan plan = planningResult.plan();
         AgentInvocationContext context = new AgentInvocationContext(message, sessionId);
         AgentObservationBuilder observationBuilder = new AgentObservationBuilder();
 
@@ -83,7 +102,20 @@ public class DefaultCoordinatorAgent implements CoordinatorAgent {
         }
 
         MultiAgentResult result = new MultiAgentResult(plan, policy, attendance, leave, salary);
-        return new AiChatResponse("MULTI_AGENT_RESPONSE", buildReply(result), result, observationBuilder.build());
+        String reply = buildReply(result);
+        var observation = observationBuilder.build();
+        ReflectionResult reflection = reflectionService.reflect(
+                new ReflectionContext(message, plan, observation, reply, result)
+        );
+        return new AiChatResponse("MULTI_AGENT_RESPONSE", reflectedReply(reply, reflection), result, observation);
+    }
+
+    private String reflectedReply(String reply, ReflectionResult reflection) {
+        if ((reflection.action() == ReflectionAction.ASK_USER || reflection.action() == ReflectionAction.FAIL)
+                && !reflection.userMessage().isBlank()) {
+            return reflection.userMessage();
+        }
+        return reply;
     }
 
     private PolicyAgentResult observePolicy(AgentObservationBuilder observationBuilder, AgentInvocationContext context) {

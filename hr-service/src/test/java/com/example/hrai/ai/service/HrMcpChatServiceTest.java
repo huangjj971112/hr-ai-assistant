@@ -1,14 +1,21 @@
 package com.example.hrai.ai.service;
 
 import com.example.hrai.dto.ai.AiChatResponse;
+import com.example.hrai.entity.UserRole;
 import com.example.hrai.exception.BusinessException;
 import com.example.hrai.ai.multiagent.CoordinatorAgent;
+import com.example.hrai.security.AuthenticatedUser;
+import com.example.hrai.security.CurrentUserService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -27,11 +34,20 @@ class HrMcpChatServiceTest {
     @Mock
     private CoordinatorAgent coordinatorAgent;
 
+    @Mock
+    private CurrentUserService currentUserService;
+
     private HrMcpChatService service;
 
     @BeforeEach
     void setUp() {
-        service = new HrMcpChatService(modelAgent, coordinatorAgent);
+        PendingLeaveClarificationMemory clarificationMemory = new PendingLeaveClarificationMemory(
+                Clock.fixed(Instant.parse("2026-06-28T04:00:00Z"), ZoneId.of("Asia/Shanghai"))
+        );
+        service = new HrMcpChatService(modelAgent, coordinatorAgent, currentUserService, clarificationMemory);
+        when(currentUserService.currentUser()).thenReturn(new AuthenticatedUser(
+                1L, "zhangsan", "张三", UserRole.EMPLOYEE
+        ));
     }
 
     @Test
@@ -66,5 +82,33 @@ class HrMcpChatServiceTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting("code")
                 .isEqualTo("MCP_MODEL_UNAVAILABLE");
+    }
+
+    @Test
+    void shouldMergeLeaveTypeAnswerWithPreviousIncompleteLeaveRequest() {
+        when(modelAgent.chat("帮我请明天的假", SESSION_ID))
+                .thenReturn(new AiChatResponse("MCP_MODEL_RESPONSE", "请补充请假类型", null));
+        when(modelAgent.chat("帮我请明天的假，请假类型是年假", SESSION_ID))
+                .thenReturn(new AiChatResponse("MCP_MODEL_RESPONSE", "已创建待确认年假申请", null));
+
+        service.chat("帮我请明天的假", SESSION_ID);
+        AiChatResponse response = service.chat("年假", SESSION_ID);
+
+        assertThat(response.getReply()).isEqualTo("已创建待确认年假申请");
+        verify(modelAgent).chat("帮我请明天的假，请假类型是年假", SESSION_ID);
+    }
+
+    @Test
+    void shouldMergeLeaveTypeAndDurationAnswerWithPreviousIncompleteLeaveRequest() {
+        when(modelAgent.chat("帮我请明天的假", SESSION_ID))
+                .thenReturn(new AiChatResponse("MCP_MODEL_RESPONSE", "请补充请假类型和时长", null));
+        when(modelAgent.chat("帮我请明天的假，请假类型是年假，一天", SESSION_ID))
+                .thenReturn(new AiChatResponse("MCP_MODEL_RESPONSE", "已创建待确认年假申请", null));
+
+        service.chat("帮我请明天的假", SESSION_ID);
+        AiChatResponse response = service.chat("年假，一天", SESSION_ID);
+
+        assertThat(response.getReply()).isEqualTo("已创建待确认年假申请");
+        verify(modelAgent).chat("帮我请明天的假，请假类型是年假，一天", SESSION_ID);
     }
 }

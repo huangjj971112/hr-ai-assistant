@@ -10,6 +10,7 @@
 - 制度查询复用 Dify 工作流和知识库，用于员工手册 RAG 问答。
 - 请假写操作必须先创建 pending，再由用户明确确认后提交。
 - Multi-Agent 支持复合问题分析，例如“请病假会不会扣工资”“迟到会不会影响工资”。
+- 返回前使用 Hybrid Reflection 检查执行结果，规则层处理确定性问题，LLM 层处理复杂完整性判断。
 - 前端提供 Agent 调用链观测，可查看子 Agent、Tool、traceId、耗时、状态和证据来源。
 
 更多项目讲解见：[docs/hr-agent-project-summary.md](docs/hr-agent-project-summary.md)。
@@ -84,7 +85,36 @@ PolicyAgent
 
 ## Multi-Agent
 
-`CoordinatorAgent` 只负责理解问题、调度子 Agent 和汇总结果，不直接写 HR 业务规则。
+`CoordinatorAgent` 只负责调度子 Agent 和汇总结果，不直接写 HR 业务规则。
+
+调度计划由 Planner 生成：
+
+- `LlmAgentDispatchPlanner`：优先调用大模型生成固定 JSON 计划。
+- `AgentDispatchPlanner`：保留原关键词规则 Planner，作为 LLM 为空、解析失败、字段非法或 Agent 不合法时的兜底。
+
+LLM Planner 输出示例：
+
+```json
+{
+  "needPlan": true,
+  "steps": [
+    {
+      "agent": "AttendanceAgent",
+      "action": "query_attendance",
+      "reason": "用户想查询本月考勤"
+    },
+    {
+      "agent": "LeaveAgent",
+      "action": "query_leave_balance",
+      "reason": "用户想查询年假余额"
+    }
+  ],
+  "needConfirm": false,
+  "summary": "需要查询考勤和假期余额"
+}
+```
+
+后端会校验 `needPlan`、`steps`、`agent`、`action` 等基础字段。Planner 日志会记录 `traceId`、planner 类型、LLM 原始输出、最终执行计划和 fallback 原因。
 
 子 Agent：
 
@@ -137,6 +167,28 @@ http://localhost:8091/mcp
 ```bash
 export MCP_SERVER_ENABLED=false
 ```
+
+## Hybrid Reflection
+
+Agent 在返回用户前会经过 Hybrid Reflection：
+
+- `RuleReflectionChecker`：优先处理确定性问题，例如 timeout、5xx、403、空数据、请假开始时间晚于结束时间。
+- `LlmReflectionChecker`：规则无法判断时，检查 Planner 是否完成、Tool 结果是否足够、是否遗漏 Agent/Tool、多 Agent 结果是否矛盾、最终回答是否准确。
+- `ReflectionService`：统一编排规则层和 LLM 层，并记录 `traceId`、规则动作、LLM 原始输出、最终动作和原因。
+
+LLM Reflection 只允许输出固定 JSON：
+
+```json
+{
+  "action": "PASS",
+  "reason": "执行结果完整，可以返回用户",
+  "userMessage": "",
+  "needRetry": false,
+  "needReplan": false
+}
+```
+
+`action` 只能是 `PASS`、`RETRY`、`REPLAN`、`ASK_USER`、`FAIL`。如果 LLM Reflection 输出解析失败，默认 `PASS` 并记录日志。第一阶段 `REPLAN` 只记录日志，不真正重新规划；`RETRY` 最多允许一次，避免循环调用产生额外费用。
 
 ## 启动依赖
 

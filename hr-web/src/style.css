@@ -835,6 +835,13 @@ pre {
   resize: vertical;
 }
 
+.assistant-composer-hint {
+  grid-column: 1 / 2;
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .leave-table {
   display: grid;
   gap: 8px;

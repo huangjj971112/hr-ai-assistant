@@ -396,6 +396,18 @@ async function chat(messageOverride?: string) {
   aiChatSending.value = false;
 }
 
+function handleChatKeydown(event: KeyboardEvent) {
+  // 中文输入法组词期间按 Enter 是确认候选词，不应该触发发送。
+  if (event.isComposing) {
+    return;
+  }
+  // 聊天框采用常见交互：Enter 发送，Shift + Enter 保留换行。
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    chat();
+  }
+}
+
 function useAiChatPrompt(message: string) {
   chatMessage.value = message;
 }
@@ -1098,10 +1110,12 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
                 v-model="chatMessage"
                 rows="2"
                 placeholder="例如：帮我请明天下午年假"
+                @keydown="handleChatKeydown"
               ></textarea>
               <button type="submit" :disabled="aiChatSending || !chatMessage.trim()">
                 {{ aiChatSending ? '发送中' : '发送' }}
               </button>
+              <p class="assistant-composer-hint">Enter 发送，Shift + Enter 换行</p>
             </form>
           </div>
 

@@ -1,6 +1,13 @@
 package com.example.hrai.ai.multiagent;
 
 import com.example.hrai.dto.ai.AiChatResponse;
+import com.example.hrai.entity.UserRole;
+import com.example.hrai.ai.reflection.ReflectionContext;
+import com.example.hrai.ai.reflection.ReflectionResult;
+import com.example.hrai.ai.reflection.ReflectionService;
+import com.example.hrai.security.AuthenticatedUser;
+import com.example.hrai.security.CurrentUserService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -34,12 +41,29 @@ class DefaultCoordinatorAgentTest {
     @Mock
     private SalaryAgent salaryAgent;
 
+    @Mock
+    private CurrentUserService currentUserService;
+
+    @Mock
+    private ReflectionService reflectionService;
+
     private DefaultCoordinatorAgent coordinatorAgent;
 
     @BeforeEach
     void setUp() {
-        coordinatorAgent = new DefaultCoordinatorAgent(new AgentDispatchPlanner(), policyAgent, attendanceAgent,
-                leaveAgent, salaryAgent, Clock.fixed(Instant.parse("2026-06-16T04:00:00Z"), ZoneId.of("Asia/Shanghai")));
+        LlmAgentDispatchPlanner planner = new LlmAgentDispatchPlanner(
+                new AgentDispatchPlanner(), new ObjectMapper(), prompt -> {
+                    throw new IllegalStateException("force rule fallback in coordinator tests");
+                }
+        );
+        when(currentUserService.currentUser()).thenReturn(new AuthenticatedUser(
+                1L, "zhangsan", "张三", UserRole.EMPLOYEE
+        ));
+        when(reflectionService.reflect(any(ReflectionContext.class)))
+                .thenReturn(ReflectionResult.pass("测试放行"));
+        coordinatorAgent = new DefaultCoordinatorAgent(planner, currentUserService, policyAgent, attendanceAgent,
+                leaveAgent, salaryAgent, reflectionService,
+                Clock.fixed(Instant.parse("2026-06-16T04:00:00Z"), ZoneId.of("Asia/Shanghai")));
     }
 
     @Test
