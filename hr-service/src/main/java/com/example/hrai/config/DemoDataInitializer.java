@@ -8,12 +8,14 @@ import com.example.hrai.entity.EmployeeLeaveBalance;
 import com.example.hrai.entity.LeaveApplication;
 import com.example.hrai.entity.LeaveStatus;
 import com.example.hrai.entity.LeaveType;
+import com.example.hrai.entity.SalaryRecord;
 import com.example.hrai.entity.UserAccount;
 import com.example.hrai.entity.UserRole;
 import com.example.hrai.repository.CandidateRepository;
 import com.example.hrai.repository.AttendanceRecordRepository;
 import com.example.hrai.repository.EmployeeLeaveBalanceRepository;
 import com.example.hrai.repository.LeaveApplicationRepository;
+import com.example.hrai.repository.SalaryRecordRepository;
 import com.example.hrai.repository.UserAccountRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.CommandLineRunner;
@@ -24,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.math.BigDecimal;
 import java.util.List;
 
 @Component
@@ -33,6 +36,7 @@ public class DemoDataInitializer implements CommandLineRunner {
     private final EmployeeLeaveBalanceRepository employeeLeaveBalanceRepository;
     private final LeaveApplicationRepository leaveApplicationRepository;
     private final AttendanceRecordRepository attendanceRecordRepository;
+    private final SalaryRecordRepository salaryRecordRepository;
     private final CandidateRepository candidateRepository;
     private final UserAccountRepository userAccountRepository;
     private final PasswordEncoder passwordEncoder;
@@ -43,8 +47,35 @@ public class DemoDataInitializer implements CommandLineRunner {
         initLeaveBalances();
         initLeaveApplications();
         initAttendanceRecords();
+        initSalaryRecords();
         initCandidates();
         initUsers();
+    }
+
+    private void initSalaryRecords() {
+        if (salaryRecordRepository.selectCount(new LambdaQueryWrapper<>()) > 0) {
+            return;
+        }
+        List.of(
+                new SalaryRecord(null, "张三", "2026-06",
+                        new BigDecimal("4000.00"),
+                        new BigDecimal("500.00"),
+                        new BigDecimal("300.00"),
+                        new BigDecimal("200.00"),
+                        BigDecimal.ZERO,
+                        new BigDecimal("4000.00"),
+                        new BigDecimal("3000.00"),
+                        "本月实发较应发少 1000，主要来自考勤扣款、社保、公积金"),
+                new SalaryRecord(null, "李四", "2026-06",
+                        new BigDecimal("8000.00"),
+                        BigDecimal.ZERO,
+                        new BigDecimal("600.00"),
+                        new BigDecimal("600.00"),
+                        new BigDecimal("1000.00"),
+                        new BigDecimal("9000.00"),
+                        new BigDecimal("7800.00"),
+                        "本月含绩效奖金 1000，扣除社保和公积金后发放")
+        ).forEach(salaryRecordRepository::insert);
     }
 
     private void initAttendanceRecords() {
@@ -120,12 +151,24 @@ public class DemoDataInitializer implements CommandLineRunner {
     }
 
     private void initUsers() {
-        if (userAccountRepository.selectCount(new LambdaQueryWrapper<>()) > 0) {
+        // 不再用“用户表为空”作为唯一条件，避免已有张三时遗漏 HR 管理员演示账号。
+        ensureDemoUser("zhangsan", "张三", UserRole.EMPLOYEE);
+        ensureDemoUser("hr_admin", "HR管理员", UserRole.HR);
+    }
+
+    private void ensureDemoUser(String username, String employeeName, UserRole role) {
+        Long count = userAccountRepository.selectCount(new LambdaQueryWrapper<UserAccount>()
+                .eq(UserAccount::getUsername, username));
+        if (count > 0) {
             return;
         }
-        List.of(
-                new UserAccount(null, "zhangsan", passwordEncoder.encode("123456"), "张三", UserRole.EMPLOYEE, true),
-                new UserAccount(null, "hr_admin", passwordEncoder.encode("123456"), "HR管理员", UserRole.HR, true)
-        ).forEach(userAccountRepository::insert);
+        userAccountRepository.insert(new UserAccount(
+                null,
+                username,
+                passwordEncoder.encode("123456"),
+                employeeName,
+                role,
+                true
+        ));
     }
 }

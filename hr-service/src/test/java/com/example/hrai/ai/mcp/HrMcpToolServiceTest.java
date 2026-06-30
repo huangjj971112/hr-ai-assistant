@@ -14,8 +14,10 @@ import com.example.hrai.ai.security.ToolTokenService;
 import com.example.hrai.dto.knowledge.KnowledgeAskResponse;
 import com.example.hrai.dto.leave.LeaveApplyResponse;
 import com.example.hrai.dto.leave.LeaveBalanceResponse;
+import com.example.hrai.dto.salary.SalaryDetailResponse;
 import com.example.hrai.entity.LeaveType;
 import com.example.hrai.entity.UserRole;
+import com.example.hrai.service.ai.tools.SalaryTools;
 import com.example.hrai.service.ai.LeaveRequestParser;
 import com.example.hrai.service.ai.ParsedLeaveRequest;
 import com.example.hrai.service.ai.tools.AttendanceTools;
@@ -30,6 +32,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.YearMonth;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -59,6 +63,8 @@ class HrMcpToolServiceTest {
     @Mock
     private KnowledgeTools knowledgeTools;
     @Mock
+    private SalaryTools salaryTools;
+    @Mock
     private LeaveRequestParser leaveRequestParser;
     @Mock
     private AgentMemoryService agentMemoryService;
@@ -74,6 +80,7 @@ class HrMcpToolServiceTest {
                 leaveTools,
                 attendanceTools,
                 knowledgeTools,
+                salaryTools,
                 leaveRequestParser,
                 agentMemoryService,
                 auditService
@@ -116,6 +123,31 @@ class HrMcpToolServiceTest {
         assertThat(result.success()).isTrue();
         assertThat(result.data().getSource()).isEqualTo("员工手册");
         verify(knowledgeTools).askKnowledge("年假可以结转吗", "张三", TOKEN);
+    }
+
+    @Test
+    void shouldQuerySalaryDetailForEmployeeFromToken() {
+        allowScopes("salary:detail:read");
+        SalaryDetailResponse detail = new SalaryDetailResponse(
+                "张三",
+                "2026-06",
+                new BigDecimal("4000.00"),
+                new BigDecimal("500.00"),
+                new BigDecimal("300.00"),
+                new BigDecimal("200.00"),
+                BigDecimal.ZERO,
+                new BigDecimal("4000.00"),
+                new BigDecimal("3000.00"),
+                new BigDecimal("1000.00"),
+                "本月实发较应发少 1000，主要来自考勤扣款、社保、公积金"
+        );
+        when(salaryTools.querySalaryDetail("张三", YearMonth.of(2026, 6))).thenReturn(detail);
+
+        var result = service.querySalary(new com.example.hrai.ai.mcp.dto.QuerySalaryMcpRequest(TOKEN, YearMonth.of(2026, 6)));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.data().netSalary()).isEqualByComparingTo("3000.00");
+        verify(salaryTools).querySalaryDetail("张三", YearMonth.of(2026, 6));
     }
 
     @Test

@@ -6,6 +6,7 @@ import com.example.hrai.ai.mcp.dto.CreateLeavePendingMcpRequest;
 import com.example.hrai.ai.mcp.dto.QueryAttendanceMcpRequest;
 import com.example.hrai.ai.mcp.dto.QueryLeaveBalanceMcpRequest;
 import com.example.hrai.ai.mcp.dto.QueryLeavePolicyMcpRequest;
+import com.example.hrai.ai.mcp.dto.QuerySalaryMcpRequest;
 import com.example.hrai.ai.tool.ToolResult;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.stereotype.Component;
@@ -38,6 +39,11 @@ public class HrMcpTools {
     @Tool(name = "query_leave_policy", description = "查询员工手册中的请假制度")
     public ToolResult<?> queryLeavePolicy(QueryLeavePolicyMcpRequest request) {
         return service.queryLeavePolicy(request);
+    }
+
+    @Tool(name = "query_salary", description = "查询工具令牌对应员工指定月份的工资明细")
+    public ToolResult<?> querySalary(QuerySalaryMcpRequest request) {
+        return service.querySalary(request);
     }
 
     @Tool(name = "create_leave_pending", description = "解析请假消息并创建待确认申请，不会直接提交")

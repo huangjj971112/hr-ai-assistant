@@ -7,6 +7,7 @@ import com.example.hrai.ai.mcp.dto.PendingLeaveMcpResult;
 import com.example.hrai.ai.mcp.dto.QueryAttendanceMcpRequest;
 import com.example.hrai.ai.mcp.dto.QueryLeaveBalanceMcpRequest;
 import com.example.hrai.ai.mcp.dto.QueryLeavePolicyMcpRequest;
+import com.example.hrai.ai.mcp.dto.QuerySalaryMcpRequest;
 import com.example.hrai.ai.mcp.audit.McpToolAuditEvent;
 import com.example.hrai.ai.mcp.audit.McpToolAuditService;
 import com.example.hrai.ai.memory.AgentMemoryService;
@@ -19,7 +20,9 @@ import com.example.hrai.dto.knowledge.KnowledgeAskResponse;
 import com.example.hrai.dto.leave.LeaveApplyRequest;
 import com.example.hrai.dto.leave.LeaveApplyResponse;
 import com.example.hrai.dto.leave.LeaveBalanceResponse;
+import com.example.hrai.dto.salary.SalaryDetailResponse;
 import com.example.hrai.exception.BusinessException;
+import com.example.hrai.service.ai.tools.SalaryTools;
 import com.example.hrai.service.ai.LeaveRequestParser;
 import com.example.hrai.service.ai.ParsedLeaveRequest;
 import com.example.hrai.service.ai.tools.AttendanceTools;
@@ -48,11 +51,13 @@ public class HrMcpToolService {
     private static final String ATTENDANCE_READ = "attendance:records:read";
     private static final String LEAVE_POLICY_READ = "leave:policy:read";
     private static final String LEAVE_APPLY = "leave:apply";
+    private static final String SALARY_DETAIL_READ = "salary:detail:read";
 
     private final ToolTokenService toolTokenService;
     private final LeaveTools leaveTools;
     private final AttendanceTools attendanceTools;
     private final KnowledgeTools knowledgeTools;
+    private final SalaryTools salaryTools;
     private final LeaveRequestParser leaveRequestParser;
     private final AgentMemoryService agentMemoryService;
     private final McpToolAuditService auditService;
@@ -62,6 +67,7 @@ public class HrMcpToolService {
             LeaveTools leaveTools,
             AttendanceTools attendanceTools,
             KnowledgeTools knowledgeTools,
+            SalaryTools salaryTools,
             LeaveRequestParser leaveRequestParser,
             AgentMemoryService agentMemoryService,
             McpToolAuditService auditService
@@ -70,6 +76,7 @@ public class HrMcpToolService {
         this.leaveTools = leaveTools;
         this.attendanceTools = attendanceTools;
         this.knowledgeTools = knowledgeTools;
+        this.salaryTools = salaryTools;
         this.leaveRequestParser = leaveRequestParser;
         this.agentMemoryService = agentMemoryService;
         this.auditService = auditService;
@@ -100,6 +107,17 @@ public class HrMcpToolService {
             ToolTokenContext caller = caller(request.toolToken(), LEAVE_POLICY_READ);
             requireText(request.question(), "question");
             return knowledgeTools.askKnowledge(request.question().trim(), caller.employeeName(), request.toolToken());
+        });
+    }
+
+    public ToolResult<SalaryDetailResponse> querySalary(QuerySalaryMcpRequest request) {
+        return execute("query_salary", "工资明细查询成功", arguments(request), () -> {
+            requireRequest(request);
+            ToolTokenContext caller = caller(request.toolToken(), SALARY_DETAIL_READ);
+            if (request.salaryMonth() == null) {
+                throw new BusinessException("VALIDATION_FAILED", "salaryMonth 不能为空");
+            }
+            return salaryTools.querySalaryDetail(caller.employeeName(), request.salaryMonth());
         });
     }
 
@@ -296,6 +314,9 @@ public class HrMcpToolService {
         } else if (request instanceof QueryLeavePolicyMcpRequest value) {
             values.put("toolToken", value.toolToken());
             values.put("question", value.question());
+        } else if (request instanceof QuerySalaryMcpRequest value) {
+            values.put("toolToken", value.toolToken());
+            values.put("salaryMonth", value.salaryMonth());
         } else if (request instanceof CreateLeavePendingMcpRequest value) {
             values.put("toolToken", value.toolToken());
             values.put("sessionId", value.sessionId());

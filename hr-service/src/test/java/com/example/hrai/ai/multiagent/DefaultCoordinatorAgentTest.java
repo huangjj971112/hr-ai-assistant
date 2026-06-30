@@ -154,4 +154,45 @@ class DefaultCoordinatorAgentTest {
         assertThat(response.getObservation().steps().get(0).toolCalls().get(0).durationMs())
                 .isGreaterThan(0);
     }
+
+    @Test
+    void shouldExecuteAgentsInLlmStepOrderForSalaryAnomalyQuestion() {
+        LlmAgentDispatchPlanner stepPlanner = new LlmAgentDispatchPlanner(
+                new AgentDispatchPlanner(), new ObjectMapper(), prompt -> """
+                {
+                  "needPlan": true,
+                  "steps": [
+                    {
+                      "agent": "SalaryAgent",
+                      "action": "query_salary",
+                      "reason": "用户反馈实发工资和应发工资不一致，需要先查工资明细"
+                    },
+                    {
+                      "agent": "PolicyAgent",
+                      "action": "query_leave_policy",
+                      "reason": "需要查询薪资扣款制度"
+                    }
+                  ],
+                  "needConfirm": false,
+                  "summary": "需要先查工资明细，再查制度依据"
+                }
+                """
+        );
+        DefaultCoordinatorAgent stepCoordinator = new DefaultCoordinatorAgent(stepPlanner, currentUserService,
+                policyAgent, attendanceAgent, leaveAgent, salaryAgent, reflectionService,
+                Clock.fixed(Instant.parse("2026-06-16T04:00:00Z"), ZoneId.of("Asia/Shanghai")));
+        PolicyAgentResult policy = new PolicyAgentResult(true, "工资扣款需要以工资条和制度为准。", List.of("薪资制度"), "p1");
+        SalaryImpactResult salary = new SalaryImpactResult(SalaryImpactLevel.UNKNOWN,
+                "需要先核对工资明细", "暂未接入工资明细接口", true);
+        when(policyAgent.query(any())).thenReturn(policy);
+        when(salaryAgent.evaluate(any())).thenReturn(salary);
+
+        AiChatResponse response = stepCoordinator.chat("我这个月只发了三千，实际应发应该是四千", "session-1");
+
+        assertThat(response.getObservation().steps()).extracting("agentName")
+                .containsExactly("SalaryAgent", "PolicyAgent");
+        assertThat(response.getObservation().planner().plannerType()).isEqualTo("LLM");
+        verify(attendanceAgent, never()).query(any(), any());
+        verify(leaveAgent, never()).evaluate(any(), any());
+    }
 }

@@ -1,12 +1,32 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 
+type UserRole = 'EMPLOYEE' | 'HR';
+
 type LoginResponse = {
   tokenType: string;
   accessToken: string;
   username: string;
   employeeName: string;
-  role: 'EMPLOYEE' | 'HR';
+  role: UserRole;
+};
+
+type UserAccountSummary = {
+  id: number;
+  username: string;
+  employeeName: string;
+  role: UserRole;
+  enabled: boolean;
+  employeeProfileStatus?: string;
+  message?: string;
+};
+
+type CreateUserForm = {
+  username: string;
+  password: string;
+  employeeName: string;
+  role: UserRole;
+  enabled: boolean;
 };
 
 type LeaveBalance = {
@@ -207,9 +227,19 @@ const myBalance = ref<LeaveBalance | null>(null);
 const myLeaveApplications = ref<LeaveApplication[]>([]);
 const hrBalance = ref<LeaveBalance | null>(null);
 const candidates = ref<Candidate[]>([]);
+const users = ref<UserAccountSummary[]>([]);
+const createUserForm = ref<CreateUserForm>({
+  username: '',
+  password: '123456',
+  employeeName: '',
+  role: 'EMPLOYEE',
+  enabled: true
+});
+const userManagementMessage = ref('');
 const chatResult = ref<unknown>(null);
 const aiChatPendingLeave = ref<LeaveConfirmation | null>(null);
 const selectedObservationMessageId = ref<number | null>(null);
+const debugReportCopied = ref(false);
 const aiChatMessages = ref<AssistantMessage[]>([
   {
     id: Date.now(),
@@ -257,6 +287,9 @@ onMounted(async () => {
     await fetchMe();
     await fetchMyBalance();
     await fetchMyLeaveApplications();
+    if (isHr.value) {
+      await fetchUsers();
+    }
   });
 });
 
@@ -280,6 +313,9 @@ async function login() {
       await fetchMe();
       await fetchMyBalance();
       await fetchMyLeaveApplications();
+    }
+    if (data.role === 'HR') {
+      await fetchUsers();
     }
   });
 }
@@ -344,6 +380,32 @@ async function searchCandidates() {
     candidates.value = await request<Candidate[]>(
       `/hr/candidates?keyword=${encodeURIComponent(candidateKeyword.value)}`
     );
+  });
+}
+
+async function fetchUsers() {
+  await run(async () => {
+    users.value = await request<UserAccountSummary[]>('/hr/users');
+  });
+}
+
+async function createUser() {
+  userManagementMessage.value = '';
+  await run(async () => {
+    // 用户创建走后端统一加密和角色校验，前端只收集学习演示需要的基础字段。
+    const created = await request<UserAccountSummary>('/hr/users', {
+      method: 'POST',
+      body: createUserForm.value
+    });
+    userManagementMessage.value = `已创建账号 ${created.username}，可使用初始密码登录。${created.message ?? ''}`;
+    createUserForm.value = {
+      username: '',
+      password: '123456',
+      employeeName: '',
+      role: 'EMPLOYEE',
+      enabled: true
+    };
+    await fetchUsers();
   });
 }
 
@@ -736,6 +798,8 @@ function clearResults() {
   myLeaveApplications.value = [];
   hrBalance.value = null;
   candidates.value = [];
+  users.value = [];
+  userManagementMessage.value = '';
   chatResult.value = null;
   chatError.value = '';
   aiChatSending.value = false;
@@ -803,6 +867,116 @@ function reflectionActionText(action?: string | null) {
 
 function summaryEntries(summary: Record<string, string | number | boolean>) {
   return Object.entries(summary ?? {});
+}
+
+function formatSummary(summary: Record<string, string | number | boolean>) {
+  const entries = summaryEntries(summary);
+  if (!entries.length) {
+    return '-';
+  }
+  return entries.map(([key, value]) => `${key}=${value}`).join(', ');
+}
+
+function selectedUserMessage(message: AssistantMessage | null) {
+  if (!message) {
+    return null;
+  }
+  const index = aiChatMessages.value.findIndex((item) => item.id === message.id);
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (aiChatMessages.value[i].role === 'user') {
+      return aiChatMessages.value[i];
+    }
+  }
+  return null;
+}
+
+function buildDebugReport(message: AssistantMessage) {
+  const observation = message.observation;
+  const userMessage = selectedUserMessage(message);
+  if (!observation) {
+    return '';
+  }
+
+  const lines = [
+    '# Agent 调试报告',
+    '',
+    `用户问题：${userMessage?.content ?? '-'}`,
+    `最终回答：${message.content}`,
+    '',
+    `requestId：${observation.requestId}`,
+    `整体状态：${statusText(observation.status)} (${observation.status})`,
+    `总耗时：${observation.totalDurationMs} ms`
+  ];
+
+  if (observation.planner) {
+    lines.push(
+      '',
+      '## Planner',
+      `类型：${plannerTypeText(observation.planner.plannerType)} (${observation.planner.plannerType})`,
+      `traceId：${observation.planner.traceId || '-'}`,
+      `计划摘要：${observation.planner.summary || '-'}`,
+      `fallback：${observation.planner.fallbackReason || '无'}`
+    );
+  }
+
+  if (observation.reflection) {
+    lines.push(
+      '',
+      '## Reflection',
+      `最终动作：${reflectionActionText(observation.reflection.action)} (${observation.reflection.action})`,
+      `规则动作：${reflectionActionText(observation.reflection.ruleAction)} (${observation.reflection.ruleAction || '-'})`,
+      `traceId：${observation.reflection.traceId || '-'}`,
+      `原因：${observation.reflection.reason || '-'}`,
+      `needRetry：${observation.reflection.needRetry}`,
+      `needReplan：${observation.reflection.needReplan}`
+    );
+  }
+
+  lines.push('', '## Agent / Tool 调用链');
+  for (const step of observation.steps) {
+    lines.push(
+      `- Agent：${step.agentName}`,
+      `  状态：${statusText(step.status)} (${step.status})`,
+      `  耗时：${step.durationMs} ms`,
+      `  摘要：${step.summary || '-'}`
+    );
+    for (const tool of step.toolCalls) {
+      lines.push(
+        `  - Tool：${tool.toolName}`,
+        `    状态：${statusText(tool.status)} (${tool.status})`,
+        `    耗时：${tool.durationMs} ms`,
+        `    traceId：${tool.traceId || '-'}`,
+        `    错误码：${tool.errorCode || '-'}`,
+        `    证据：${tool.evidenceSource || '-'}`,
+        `    输入：${formatSummary(tool.inputSummary)}`,
+        `    输出：${formatSummary(tool.resultSummary)}`
+      );
+    }
+  }
+
+  if (observation.decision) {
+    lines.push(
+      '',
+      '## 最终判断',
+      `结果：${observation.decision.outcome}`,
+      `依据：${observation.decision.basis}`,
+      `建议人工确认：${observation.decision.needsHumanConfirmation}`
+    );
+  }
+
+  return lines.join('\n');
+}
+
+async function copyDebugReport() {
+  if (!selectedObservationMessage.value?.observation) {
+    return;
+  }
+  const report = buildDebugReport(selectedObservationMessage.value);
+  await navigator.clipboard.writeText(report);
+  debugReportCopied.value = true;
+  window.setTimeout(() => {
+    debugReportCopied.value = false;
+  }, 1800);
 }
 
 function observationTitle(message: AssistantMessage | null) {
@@ -1006,6 +1180,60 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
         </section>
 
         <section v-if="isHr" id="hr" class="dashboard-grid">
+          <article class="panel wide">
+            <div class="panel-header">
+              <div>
+                <h3>用户管理</h3>
+                <p>先创建账号，再选择角色；创建后可直接登录。</p>
+              </div>
+              <button class="secondary" @click="fetchUsers">刷新</button>
+            </div>
+            <div class="form-grid">
+              <label>
+                登录账号
+                <input v-model="createUserForm.username" placeholder="例如 lisi" />
+              </label>
+              <label>
+                初始密码
+                <input v-model="createUserForm.password" type="password" />
+              </label>
+              <label>
+                员工姓名
+                <input v-model="createUserForm.employeeName" placeholder="例如 李四" />
+              </label>
+              <label>
+                角色
+                <select v-model="createUserForm.role">
+                  <option value="EMPLOYEE">普通员工</option>
+                  <option value="HR">HR 管理员</option>
+                </select>
+              </label>
+              <label class="checkbox-label">
+                <input v-model="createUserForm.enabled" type="checkbox" />
+                启用账号
+              </label>
+            </div>
+            <div class="actions">
+              <button @click="createUser">创建用户</button>
+              <span v-if="userManagementMessage" class="success-text">{{ userManagementMessage }}</span>
+            </div>
+            <div v-if="users.length" class="leave-table">
+              <div class="leave-row user-row leave-head">
+                <span>账号</span>
+                <span>员工姓名</span>
+                <span>角色</span>
+                <span>状态</span>
+              </div>
+              <div v-for="user in users" :key="user.id" class="leave-row user-row">
+                <strong>{{ user.username }}</strong>
+                <span>{{ user.employeeName }}</span>
+                <span>{{ user.role === 'HR' ? 'HR 管理员' : '普通员工' }}</span>
+                <span class="status-text">{{ user.enabled ? '启用' : '停用' }}</span>
+              </div>
+            </div>
+            <p v-else class="empty">暂无用户数据，点击刷新或创建新用户。</p>
+          </article>
+
           <article class="panel">
             <div class="panel-header">
               <div>
@@ -1163,13 +1391,17 @@ function isPendingLeaveApply(value: unknown): value is PendingLeaveApply {
                 <h3>Agent 观测</h3>
                 <p>{{ observationTitle(selectedObservationMessage) }}</p>
               </div>
-              <span
-                v-if="selectedObservation"
-                class="observation-status"
-                :class="selectedObservation.status.toLowerCase()"
-              >
-                {{ statusText(selectedObservation.status) }}
-              </span>
+              <div v-if="selectedObservation" class="observation-header-actions">
+                <button type="button" class="secondary compact-button" @click="copyDebugReport">
+                  {{ debugReportCopied ? '已复制' : '复制调试报告' }}
+                </button>
+                <span
+                  class="observation-status"
+                  :class="selectedObservation.status.toLowerCase()"
+                >
+                  {{ statusText(selectedObservation.status) }}
+                </span>
+              </div>
             </div>
 
             <div v-if="selectedObservation" class="observation-content">

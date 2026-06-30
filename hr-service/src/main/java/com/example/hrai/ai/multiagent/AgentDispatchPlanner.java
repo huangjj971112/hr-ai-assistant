@@ -19,7 +19,8 @@ public class AgentDispatchPlanner {
      */
     public AgentDispatchPlan plan(String message) {
         String text = message == null ? "" : message;
-        boolean salaryQuestion = containsAny(text, "工资", "扣工资", "薪资", "薪酬");
+        boolean salaryQuestion = containsAny(text,
+                "工资", "扣工资", "薪资", "薪酬", "工资条", "实发", "应发", "少发", "只发了");
         boolean attendanceQuestion = containsAny(text, "迟到", "考勤", "打卡", "早退", "缺勤");
         boolean leaveQuestion = containsAny(text, "年假", "病假", "事假", "请假");
         boolean policyQuestion = salaryQuestion || containsAny(text, "制度", "规则", "政策", "会不会", "影响");

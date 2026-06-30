@@ -74,6 +74,19 @@ class HrMcpChatServiceTest {
     }
 
     @Test
+    void shouldRouteSalaryAnomalyQuestionsToCoordinatorAgent() {
+        String message = "我这个月只发了三千，实际应发应该是四千";
+        AiChatResponse expected = new AiChatResponse("MULTI_AGENT_RESPONSE", "需要先核对工资明细。", null);
+        when(coordinatorAgent.supports(message)).thenReturn(true);
+        when(coordinatorAgent.chat(message, SESSION_ID)).thenReturn(expected);
+
+        AiChatResponse response = service.chat(message, SESSION_ID);
+
+        assertThat(response).isSameAs(expected);
+        verify(modelAgent, never()).chat(message, SESSION_ID);
+    }
+
+    @Test
     void shouldExposeStrictModelFailureWithoutKeywordFallback() {
         when(modelAgent.chat("确认", SESSION_ID))
                 .thenThrow(new BusinessException("MCP_MODEL_UNAVAILABLE", "MCP 大模型未配置"));

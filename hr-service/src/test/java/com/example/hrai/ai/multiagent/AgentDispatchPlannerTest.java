@@ -38,4 +38,15 @@ class AgentDispatchPlannerTest {
         assertThat(plan.needSalary()).isTrue();
         assertThat(plan.needLeave()).isFalse();
     }
+
+    @Test
+    void shouldSupportSalaryAnomalyQuestion() {
+        AgentDispatchPlan plan = planner.plan("我这个月只发了三千，实际应发应该是四千");
+
+        assertThat(planner.supports("我这个月只发了三千，实际应发应该是四千")).isTrue();
+        assertThat(plan.needSalary()).isTrue();
+        assertThat(plan.needPolicy()).isTrue();
+        assertThat(plan.needAttendance()).isFalse();
+        assertThat(plan.needLeave()).isFalse();
+    }
 }

@@ -1,6 +1,7 @@
 package com.example.hrai.ai.mcp.client;
 
 import com.example.hrai.ai.tool.ToolResult;
+import com.example.hrai.ai.tool.schema.JsonSchemaToolArgumentValidator;
 import com.example.hrai.exception.BusinessException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,6 +25,7 @@ import java.util.Map;
 public class StreamableHttpHrMcpCaller implements HrMcpCaller {
 
     private final ObjectMapper objectMapper;
+    private final JsonSchemaToolArgumentValidator argumentValidator;
     private final String baseUrl;
     private final String endpoint;
 
@@ -33,6 +35,7 @@ public class StreamableHttpHrMcpCaller implements HrMcpCaller {
             @Value("${app.ai.mcp.endpoint:/mcp}") String endpoint
     ) {
         this.objectMapper = objectMapper;
+        this.argumentValidator = new JsonSchemaToolArgumentValidator();
         this.baseUrl = baseUrl;
         this.endpoint = endpoint;
     }
@@ -56,6 +59,8 @@ public class StreamableHttpHrMcpCaller implements HrMcpCaller {
      */
     @Override
     public ToolResult<Object> call(String toolName, Map<String, Object> request) {
+        // LLM/Agent 到 MCP 的协议边界先走 JSON Schema 校验，避免多余字段、错误枚举和非 ISO 日期进入 MCP Server。
+        argumentValidator.validate(toolName, request);
         // Streamable HTTP transport 指向本服务暴露的 /mcp 端点。
         var transport = HttpClientStreamableHttpTransport.builder(baseUrl)
                 .endpoint(endpoint)

@@ -111,6 +111,118 @@ class HrAiAssistantApplicationTests {
     }
 
     @Test
+    void shouldAllowHrCreatingUserAndNewUserCanLogin() {
+        String request = """
+                {
+                  "username": "lisi_user",
+                  "password": "123456",
+                  "employeeName": "李四",
+                  "role": "EMPLOYEE",
+                  "enabled": true
+                }
+                """;
+
+        ResponseEntity<String> createResponse = restTemplate.exchange(
+                url("/api/hr/users"),
+                HttpMethod.POST,
+                authJsonEntity(request, hrToken()),
+                String.class
+        );
+
+        assertThat(createResponse.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(createResponse.getBody()).contains("\"username\":\"lisi_user\"");
+        assertThat(createResponse.getBody()).contains("\"employeeName\":\"李四\"");
+        assertThat(createResponse.getBody()).contains("\"role\":\"EMPLOYEE\"");
+        assertThat(createResponse.getBody()).contains("\"employeeProfileStatus\":\"EXISTING\"");
+        assertThat(createResponse.getBody()).contains("已绑定已有员工档案");
+
+        String newUserToken = login("lisi_user", "123456");
+        assertThat(newUserToken).isNotBlank();
+    }
+
+    @Test
+    void shouldCreateZeroLeaveBalanceWhenCreatingNewEmployeeUser() {
+        String request = """
+                {
+                  "username": "new_employee_user",
+                  "password": "123456",
+                  "employeeName": "测试员工A",
+                  "role": "EMPLOYEE",
+                  "enabled": true
+                }
+                """;
+
+        ResponseEntity<String> createResponse = restTemplate.exchange(
+                url("/api/hr/users"),
+                HttpMethod.POST,
+                authJsonEntity(request, hrToken()),
+                String.class
+        );
+
+        assertThat(createResponse.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(createResponse.getBody()).contains("\"employeeProfileStatus\":\"CREATED\"");
+        assertThat(createResponse.getBody()).contains("已自动创建员工假期余额档案");
+
+        ResponseEntity<String> balanceResponse = restTemplate.exchange(
+                url("/api/employee/me/leave/balance"),
+                HttpMethod.GET,
+                authEntity(login("new_employee_user", "123456")),
+                String.class
+        );
+
+        assertThat(balanceResponse.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(balanceResponse.getBody()).contains("\"employeeName\":\"测试员工A\"");
+        assertThat(balanceResponse.getBody()).contains("\"annualLeaveBalance\":0");
+        assertThat(balanceResponse.getBody()).contains("\"sickLeaveBalance\":0");
+    }
+
+    @Test
+    void shouldRejectBindingSameEmployeeNameToTwoEmployeeUsers() {
+        String request = """
+                {
+                  "username": "duplicate_zhangsan",
+                  "password": "123456",
+                  "employeeName": "张三",
+                  "role": "EMPLOYEE",
+                  "enabled": true
+                }
+                """;
+
+        ResponseEntity<String> createResponse = restTemplate.exchange(
+                url("/api/hr/users"),
+                HttpMethod.POST,
+                authJsonEntity(request, hrToken()),
+                String.class
+        );
+
+        assertThat(createResponse.getStatusCode().value()).isEqualTo(400);
+        assertThat(createResponse.getBody()).contains("\"code\":\"EMPLOYEE_ACCOUNT_ALREADY_BOUND\"");
+    }
+
+    @Test
+    void shouldRejectEmployeeManagingUsers() {
+        String request = """
+                {
+                  "username": "wangwu_user",
+                  "password": "123456",
+                  "employeeName": "王五",
+                  "role": "EMPLOYEE",
+                  "enabled": true
+                }
+                """;
+
+        ResponseEntity<String> createResponse = restTemplate.exchange(
+                url("/api/hr/users"),
+                HttpMethod.POST,
+                authJsonEntity(request, employeeToken()),
+                String.class
+        );
+
+        assertThat(createResponse.getStatusCode().value()).isEqualTo(400);
+        assertThat(createResponse.getBody()).contains("\"code\":\"FORBIDDEN\"");
+    }
+
+    @Test
     void shouldScheduleInterview() {
         String request = """
                 {

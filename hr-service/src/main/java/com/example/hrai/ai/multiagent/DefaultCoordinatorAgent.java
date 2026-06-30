@@ -23,8 +23,10 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 默认 Multi-Agent 协调器。
@@ -73,14 +75,39 @@ public class DefaultCoordinatorAgent implements CoordinatorAgent {
 
     @Override
     public AiChatResponse chat(String message, String sessionId) {
+        /*
+         * chat 是 Multi-Agent 对话的总入口，负责把一次用户问题串成完整链路：
+         *
+         * 用户问题
+         * -> Planner 判断需要哪些子 Agent
+         * -> Coordinator 按计划调用子 Agent
+         * -> 子 Agent 返回结构化事实
+         * -> Coordinator 汇总最终回复
+         * -> Reflection 检查最终回复是否可靠
+         * -> 返回给前端
+         *
+         * 注意：Coordinator 只做“调度”和“汇总”，不直接写请假、考勤、薪酬等业务规则。
+         */
         AuthenticatedUser user = currentUserService.currentUser();
         /*
          * Coordinator 优先让 LLM Planner 生成结构化执行计划。
          * LLM 输出不可用或非法时，planner 内部会自动回退到原规则 Planner。
+         *
+         * planningResult 里不仅有最终 plan，还包含 plannerType、traceId、rawOutput、
+         * fallbackReason 等观测字段，方便前端展示“本次为什么这样调度”。
          */
         AgentDispatchPlanningResult planningResult = planner.plan(message, user, LocalDateTime.now(clock));
         AgentDispatchPlan plan = planningResult.plan();
+        /*
+         * AgentInvocationContext 是传给子 Agent 的轻量上下文。
+         * 当前主要包含用户原始问题和 sessionId；sessionId 用于 pending 请假等多轮确认场景。
+         */
         AgentInvocationContext context = new AgentInvocationContext(message, sessionId);
+        /*
+         * observationBuilder 用来收集本次 Multi-Agent 的调用链：
+         * Planner、每个子 Agent、每次 Tool 调用、最终决策和 Reflection 结果。
+         * 前端“点击查看本次 Agent 调用链”展示的内容就来自这里。
+         */
         AgentObservationBuilder observationBuilder = new AgentObservationBuilder();
         observationBuilder.planner(new AgentPlannerObservation(
                 planningResult.plannerType().name(),
@@ -90,18 +117,39 @@ public class DefaultCoordinatorAgent implements CoordinatorAgent {
         ));
 
         /*
-         * 每个子 Agent 只在计划需要时执行，避免不必要的 MCP/模型/业务调用。
+         * 每个子 Agent 只在 plan.steps 中出现时执行，避免不必要的 MCP/模型/业务调用。
          * 子 Agent 返回的是结构化结果，最终自然语言回复在 buildReply 中统一生成。
+         *
+         * 例如：
+         * - 问“年假制度”通常只需要 PolicyAgent；
+         * - 问“这周迟到两次会不会影响工资”通常需要 AttendanceAgent + PolicyAgent + SalaryAgent；
+         * - 问“我下周想请三天年假会不会影响工资”通常需要 PolicyAgent + LeaveAgent + SalaryAgent；
+         * - 问“本月实发 3000，应发 4000”可以由 LLM Planner 安排 SalaryAgent 先执行。
          */
-        PolicyAgentResult policy = plan.needPolicy() ? observePolicy(observationBuilder, context) : null;
-        AttendanceAgentResult attendance = plan.needAttendance()
-                ? observeAttendance(observationBuilder, context, resolveAttendanceRange(message))
-                : null;
-        LeaveAgentResult leave = plan.needLeave() ? observeLeave(observationBuilder, context, plan) : null;
-        SalaryImpactResult salary = plan.needSalary()
-                ? observeSalary(observationBuilder, new SalaryAgentInput(message, policy, attendance, leave))
-                : null;
+        PolicyAgentResult policy = null;
+        AttendanceAgentResult attendance = null;
+        LeaveAgentResult leave = null;
+        SalaryImpactResult salary = null;
+        Set<String> executedAgents = new LinkedHashSet<>();
+        for (AgentDispatchStep step : plan.steps()) {
+            // 当前每个子 Agent 在一次请求里最多执行一次；如果 LLM 重复规划同一 Agent，保留第一次执行结果。
+            if (!executedAgents.add(step.agent())) {
+                continue;
+            }
+            switch (step.agent()) {
+                case "PolicyAgent" -> policy = observePolicy(observationBuilder, context);
+                case "AttendanceAgent" -> attendance = observeAttendance(
+                        observationBuilder, context, resolveAttendanceRange(message));
+                case "LeaveAgent" -> leave = observeLeave(observationBuilder, context, plan);
+                case "SalaryAgent" -> salary = observeSalary(
+                        observationBuilder, new SalaryAgentInput(message, policy, attendance, leave));
+                default -> {
+                    // Planner 已在上游做白名单校验；这里保留 default，防止未来手写 Plan 时出现未知 Agent。
+                }
+            }
+        }
         if (salary != null) {
+            // SalaryAgent 的结论会作为最终决策写入观测面板，例如 POSSIBLE_IMPACT / NO_IMPACT / UNKNOWN。
             observationBuilder.decision(new AgentDecisionObservation(
                     salary.impactLevel().name(),
                     salary.basis(),
@@ -109,13 +157,32 @@ public class DefaultCoordinatorAgent implements CoordinatorAgent {
             ));
         }
 
+        /*
+         * MultiAgentResult 是本次协调结果的结构化载体。
+         * 它会同时用于：
+         * 1. buildReply 生成用户可读的自然语言回复；
+         * 2. ReflectionService 判断计划是否完成、Tool 结果是否足够、回答是否可靠；
+         * 3. AiChatResponse.data 返回给前端，便于调试或扩展页面展示。
+         */
         MultiAgentResult result = new MultiAgentResult(plan, policy, attendance, leave, salary);
         String reply = buildReply(result);
+        /*
+         * 这里先 build 一次 observation，作为 Reflection 的输入。
+         * Reflection 需要看到 Planner、Agent、Tool 的执行情况，才能判断最终回答是否需要追问或拦截。
+         */
         var observation = observationBuilder.build();
         ReflectionResult reflection = reflectionService.reflect(
                 new ReflectionContext(message, plan, observation, reply, result)
         );
+        /*
+         * Reflection 执行完成后，再把反思结果补回 observationBuilder。
+         * 这样前端最终看到的调用链会同时包含“执行过程”和“返回前检查结果”。
+         */
         observationBuilder.reflection(reflectionObservation(reflection));
+        /*
+         * reflectedReply 会在 Reflection 要求 ASK_USER 或 FAIL 时，用 userMessage 覆盖原回复；
+         * 其他 PASS / REPLAN 记录型场景则保留原始 reply。
+         */
         return new AiChatResponse(
                 "MULTI_AGENT_RESPONSE", reflectedReply(reply, reflection), result, observationBuilder.build()
         );
@@ -224,7 +291,25 @@ public class DefaultCoordinatorAgent implements CoordinatorAgent {
             SalaryAgentInput input
     ) {
         AgentObservationBuilder.AgentStepHandle handle = observationBuilder.startAgent("SalaryAgent", "判断薪酬影响");
+        long startedAtNanos = System.nanoTime();
         SalaryImpactResult result = salaryAgent.evaluate(input);
+        long durationMs = elapsedMillis(startedAtNanos);
+        if (result.traceId() != null && !result.traceId().isBlank()) {
+            // 工资明细类问题会真正调用 query_salary；把 Tool 结果挂到观测链，方便前端确认走的是工资接口。
+            observationBuilder.addToolCall(handle, new AgentToolObservation(
+                    "query_salary",
+                    AgentObservationStatus.SUCCESS,
+                    durationMs,
+                    result.traceId(),
+                    observationSanitizer.sanitizeInput("query_salary", Map.of("salaryMonth", result.salaryMonth())),
+                    observationSanitizer.sanitizeResult(
+                            "query_salary",
+                            ToolResult.success(result.traceId(), "ok", result.salaryDetail())
+                    ),
+                    null,
+                    null
+            ));
+        }
         observationBuilder.finishAgent(handle, AgentObservationStatus.SUCCESS, "SalaryAgent 已完成薪酬影响判断");
         return result;
     }
@@ -249,21 +334,25 @@ public class DefaultCoordinatorAgent implements CoordinatorAgent {
 
     private String buildReply(MultiAgentResult result) {
         List<String> agents = new ArrayList<>();
-        if (result.policy() != null) {
-            agents.add("PolicyAgent");
-        }
-        if (result.attendance() != null) {
-            agents.add("AttendanceAgent");
-        }
-        if (result.leave() != null) {
-            agents.add("LeaveAgent");
-        }
-        if (result.salary() != null) {
-            agents.add("SalaryAgent");
+        Set<String> added = new LinkedHashSet<>();
+        for (AgentDispatchStep step : result.dispatchPlan().steps()) {
+            if (agentExecuted(result, step.agent()) && added.add(step.agent())) {
+                agents.add(step.agent());
+            }
         }
 
         String salarySummary = result.salary() == null ? "暂未进行薪酬影响判断。" : result.salary().summary();
         String basis = result.salary() == null ? "" : "\n判断依据：" + result.salary().basis();
         return "已协调 " + String.join("、", agents) + " 进行分析。\n薪酬影响：" + salarySummary + basis;
+    }
+
+    private boolean agentExecuted(MultiAgentResult result, String agentName) {
+        return switch (agentName) {
+            case "PolicyAgent" -> result.policy() != null;
+            case "AttendanceAgent" -> result.attendance() != null;
+            case "LeaveAgent" -> result.leave() != null;
+            case "SalaryAgent" -> result.salary() != null;
+            default -> false;
+        };
     }
 }

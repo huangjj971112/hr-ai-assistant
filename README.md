@@ -11,7 +11,8 @@
 - 请假写操作必须先创建 pending，再由用户明确确认后提交。
 - Multi-Agent 支持复合问题分析，例如“请病假会不会扣工资”“迟到会不会影响工资”。
 - 返回前使用 Hybrid Reflection 检查执行结果，规则层处理确定性问题，LLM 层处理复杂完整性判断。
-- 前端提供 Agent 调用链观测，可查看子 Agent、Tool、traceId、耗时、状态和证据来源。
+- 前端提供 Agent 调用链观测，可查看 Planner、Reflection、子 Agent、Tool、traceId、耗时、状态和证据来源。
+- HR 端支持用户管理，可创建员工账号或 HR 账号，新账号创建后可直接登录。
 
 更多项目讲解见：[docs/hr-agent-project-summary.md](docs/hr-agent-project-summary.md)。
 
@@ -91,6 +92,7 @@ PolicyAgent
 
 - `LlmAgentDispatchPlanner`：优先调用大模型生成固定 JSON 计划。
 - `AgentDispatchPlanner`：保留原关键词规则 Planner，作为 LLM 为空、解析失败、字段非法或 Agent 不合法时的兜底。
+- 当前 Planner 是 Step-based Planner，`steps` 中的顺序会被 `CoordinatorAgent` 优先尊重。
 
 LLM Planner 输出示例：
 
@@ -116,12 +118,14 @@ LLM Planner 输出示例：
 
 后端会校验 `needPlan`、`steps`、`agent`、`action` 等基础字段。Planner 日志会记录 `traceId`、planner 类型、LLM 原始输出、最终执行计划和 fallback 原因。
 
+`AgentDispatchPlan` 仍保留 `needPolicy`、`needAttendance`、`needLeave`、`needSalary` 等布尔字段，兼容规则 Planner 和旧测试；但 Coordinator 调度时优先遍历 `steps`，所以 LLM 可以表达不同业务场景下的执行顺序。
+
 子 Agent：
 
 - `PolicyAgent`：查询制度依据，复用 `query_leave_policy` 和 Dify RAG。
 - `AttendanceAgent`：查询考勤事实，复用 `query_attendance`。
 - `LeaveAgent`：查询假期余额或创建请假 pending，复用 `query_leave_balance`、`create_leave_pending`。
-- `SalaryAgent`：判断薪酬影响。当前没有独立薪酬接口时，先基于制度、考勤和假期结构化结果做保守判断。
+- `SalaryAgent`：查询工资明细或判断薪酬影响。工资差额类问题优先复用 `query_salary`，请假/考勤影响工资的问题再结合制度、考勤和假期结构化结果做保守判断。
 
 示例：
 
@@ -134,6 +138,9 @@ LLM Planner 输出示例：
 
 我这周迟到了两次，会影响工资吗？
 -> AttendanceAgent + PolicyAgent + SalaryAgent
+
+我这个月只发了三千，实际应发应该是四千
+-> SalaryAgent + PolicyAgent
 ```
 
 ## MCP Tools
@@ -149,6 +156,7 @@ http://localhost:8091/mcp
 - `query_leave_balance`
 - `query_attendance`
 - `query_leave_policy`
+- `query_salary`
 - `create_leave_pending`
 - `confirm_leave_apply`
 - `cancel_pending`
@@ -161,6 +169,14 @@ http://localhost:8091/mcp
 - pending 使用 `pendingId + version + idempotencyKey` 做确认和幂等控制。
 - AgentToolCallGuard 限制单次模型请求 Tool 调用次数，避免循环调用产生费用。
 - MCP Tool 审计日志会脱敏记录调用信息，并返回 `traceId` 便于排查。
+
+JSON Schema 约束层：
+
+- `ToolJsonSchemas` 集中维护所有 LLM/Agent 到 Tool 的入参 schema，schema 版本统一为 draft 2020-12。
+- `JsonSchemaToolArgumentValidator` 在 `StreamableHttpHrMcpCaller` 发起 MCP HTTP 调用前校验参数。
+- 当前校验覆盖 `required`、`additionalProperties: false`、`type`、`enum`、`format`、`pattern`、字符串长度和最小数值。
+- 读类 Tool 的 `sessionId` 允许传入但不强制必填；写类 Tool 必须携带 `sessionId`、`pendingId`、`expectedVersion` 等确认边界字段。
+- `query_salary` 已落地为工资明细查询 Tool，`query_overtime`、`query_leave_records`、`create_missing_card_pending`、`create_comp_time_pending` 暂作为预留 schema 注册，等对应 Tool 落地后直接复用。
 
 可通过下面配置关闭 MCP Server：
 
@@ -189,6 +205,53 @@ LLM Reflection 只允许输出固定 JSON：
 ```
 
 `action` 只能是 `PASS`、`RETRY`、`REPLAN`、`ASK_USER`、`FAIL`。如果 LLM Reflection 输出解析失败，默认 `PASS` 并记录日志。第一阶段 `REPLAN` 只记录日志，不真正重新规划；`RETRY` 最多允许一次，避免循环调用产生额外费用。
+
+重要边界：
+
+- Tool 返回结果是系统事实，用户原始问题只代表意图或用户自述。
+- 用户自述与系统查询记录不一致时，不直接判定为 Agent 执行失败。
+- 例如用户说“我这周迟到了两次”，但 `query_attendance` 查到 `lateCount=0`，系统会保留最终回答，并提示以系统记录或 HR 审核为准。
+- 只有 Tool 之间互相矛盾、关键 Tool 失败、最终答案明显编造事实时，Reflection 才会拦截或要求追问。
+
+## Agent 观测面板
+
+前端点击“查看本次 Agent 调用链”后，可以看到一次请求的完整观测信息：
+
+- `Planner`：显示 `LLM Planner` 或 `Rule Planner`、planner `traceId`、计划摘要和 fallback 原因。
+- `Reflection`：显示最终动作、规则层动作、reflection `traceId`、原因、是否需要 retry/replan。
+- `Agent Steps`：按顺序展示 `PolicyAgent`、`AttendanceAgent`、`LeaveAgent`、`SalaryAgent` 等子 Agent。
+- `Tool Calls`：展示 MCP Tool 名称、状态、耗时、traceId、错误码、脱敏后的输入输出摘要。
+- `Decision`：展示薪酬影响等最终结构化判断，例如 `NO_IMPACT`、`POSSIBLE_IMPACT`、`UNKNOWN`。
+- `复制调试报告`：把当前选中的调用链整理成纯文本，方便复制给他人排查或用于面试讲解。
+
+观测数据来自后端 `AgentObservationSnapshot`，核心字段包括：
+
+```text
+requestId
+status
+totalDurationMs
+planner
+reflection
+steps
+decision
+```
+
+其中：
+
+- `planner` 由 `AgentPlannerObservation` 表示。
+- `reflection` 由 `AgentReflectionObservation` 表示。
+- `steps` 由 `AgentObservationStep` 和 `AgentToolObservation` 表示。
+
+这块主要用于学习和排查：
+
+```text
+用户问题为什么被分配给这些 Agent？
+到底走了 LLM Planner 还是 Rule Planner？
+Dify 有没有返回制度依据？
+MCP Tool 有没有失败？
+Reflection 有没有覆盖最终回答？
+如何把本次调用链复制成调试报告？
+```
 
 ## 启动依赖
 
@@ -288,12 +351,39 @@ npm run dev
 http://localhost:5173
 ```
 
+Agent 聊天输入框支持：
+
+```text
+Enter：发送
+Shift + Enter：换行
+```
+
+中文输入法组词期间按 Enter 只确认候选词，不会误发送消息。
+
 演示账号：
 
 ```text
 员工端：zhangsan / 123456
 HR 端：hr_admin / 123456
 ```
+
+启动时 `DemoDataInitializer` 会检查演示账号是否存在；即使数据库里已经有 `zhangsan`，也会自动补齐缺失的 `hr_admin`。登录 HR 端后，可在“HR 管理 -> 用户管理”里创建新账号、选择角色并设置初始密码。
+
+HR 创建普通员工账号时，后端会同时处理员工档案：
+
+- 如果 `employeeName` 已存在员工档案，但还没有绑定普通员工账号，则创建的是该员工的登录账号，并返回“已绑定已有员工档案”提示。
+- 如果 `employeeName` 不存在员工档案，则自动创建假期余额档案，默认年假 `0` 天、病假 `0` 天。
+- 同一个 `employeeName` 只能绑定一个普通员工账号，避免两个账号看到同一份请假记录和假期余额。
+
+当前角色：
+
+- `EMPLOYEE`：普通员工，只能查询和操作自己的员工侧数据。
+- `HR`：HR 管理员，可访问 `/api/hr/**` 管理接口，包括用户创建、候选人查询、HR 假期查询等。
+
+权限边界：
+
+- `hr-gateway` 会对 `/api/hr/**` 做角色过滤，非 HR 请求会被拒绝。
+- `hr-service` 的用户管理服务也会再次校验当前用户角色，避免绕过 gateway 直接调用服务接口。
 
 推荐启动顺序：
 
@@ -370,6 +460,23 @@ curl -X POST "http://localhost:8090/api/auth/login" \
 Authorization: Bearer <accessToken>
 ```
 
+HR 创建用户：
+
+```bash
+curl -X POST "http://localhost:8090/api/hr/users" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <HR accessToken>" \
+  -d '{
+    "username": "lisi",
+    "password": "123456",
+    "employeeName": "李四",
+    "role": "EMPLOYEE",
+    "enabled": true
+  }'
+```
+
+创建成功后，`lisi / 123456` 可以直接登录。返回结果不会包含 `passwordHash`。
+
 MCP Agent 对话：
 
 ```bash
@@ -426,10 +533,11 @@ curl -X POST "http://localhost:8090/api/ai/dify/workflow/chat" \
 1. 登录员工账号 `zhangsan / 123456`。
 2. 输入 `查询我的年假余额`，展示 Tool Calling 查询假期余额。
 3. 输入 `我想请病假，会不会扣工资？`，展示 PolicyAgent + SalaryAgent。
-4. 点击“查看本次 Agent 调用链”，展示 Dify 证据来源和 traceId。
+4. 点击“查看本次 Agent 调用链”，展示 Planner、Reflection、Dify 证据来源和 traceId。
 5. 输入 `我这周迟到了两次，会影响工资吗？`，展示 AttendanceAgent + PolicyAgent + SalaryAgent。
-6. 输入 `帮我请明天一天年假，原因是个人事务，但先不要提交`，展示 pending + confirm。
-7. 说明不能直接提交，必须用户明确确认。
+6. 输入 `我这个月只发了三千，实际应发应该是四千`，展示 SalaryAgent 调用 `query_salary` 查询工资明细。
+7. 输入 `帮我请明天一天年假，原因是个人事务，但先不要提交`，展示 pending + confirm。
+8. 说明不能直接提交，必须用户明确确认。
 
 注意：演示时不要随便发送“确认”，否则会创建真实请假申请。
 
@@ -453,7 +561,13 @@ mvn -s tmp-empty-settings.xml test
 mvn -s tmp-empty-settings.xml -pl hr-service test
 ```
 
-当前测试覆盖 Spring 上下文启动、HR 业务接口、AI 对话入口、多轮请假确认、Redis Memory、MCP Tool、Multi-Agent、Dify 员工手册问答、Dify Workflow mock 分支和 Tool API 权限控制。
+当前测试覆盖 Spring 上下文启动、HR 业务接口、AI 对话入口、多轮请假确认、Redis Memory、MCP Tool、Multi-Agent、Dify 员工手册问答、Dify Workflow mock 分支、Tool API 权限控制、Planner fallback、Hybrid Reflection 和 Agent 观测数据。
+
+最近一次 `hr-service` 全量测试：
+
+```text
+Tests run: 151, Failures: 0, Errors: 0
+```
 
 ## 关键类
 
@@ -470,12 +584,18 @@ mvn -s tmp-empty-settings.xml -pl hr-service test
 - `StreamableHttpHrMcpCaller`：MCP Client 调用封装。
 - `AgentMemoryService`：pending 请假 Memory 管理。
 - `AgentObservationBuilder`：Agent 调用链观测数据构建。
+- `AgentPlannerObservation`：Planner 观测字段。
+- `AgentReflectionObservation`：Reflection 观测字段。
+- `RuleReflectionChecker`：确定性反思检查。
+- `LlmReflectionChecker`：复杂执行结果反思检查。
+- `ReflectionService`：Hybrid Reflection 编排和保护逻辑。
 
 ## 后续扩展方向
 
-- 接入真实薪酬规则或薪酬查询接口，让 SalaryAgent 不只依赖制度摘要。
+- 将当前演示工资明细替换为真实薪酬系统或工资条数据源。
 - 扩展 LeaveRequestParser，支持更多绝对日期和自然语言日期。
 - 增加模型请求总超时和费用统计。
 - 将 Agent observation 持久化，支持历史调用链查询。
+- 将复制出的调试报告保存到历史记录，支持后续复盘。
 - 对 Dify 返回内容做更细粒度的引用展示，提升制度答案可信度。
 - 引入 Flyway/Liquibase 替代 `schema.sql`，管理表结构和初始化数据。

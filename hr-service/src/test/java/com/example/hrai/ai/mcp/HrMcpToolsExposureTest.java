@@ -24,6 +24,7 @@ class HrMcpToolsExposureTest {
                 "query_leave_balance",
                 "query_attendance",
                 "query_leave_policy",
+                "query_salary",
                 "create_leave_pending",
                 "confirm_leave_apply",
                 "cancel_pending"

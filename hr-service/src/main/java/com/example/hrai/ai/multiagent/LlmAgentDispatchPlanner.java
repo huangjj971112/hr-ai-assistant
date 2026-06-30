@@ -14,6 +14,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Set;
@@ -55,6 +57,7 @@ public class LlmAgentDispatchPlanner {
               action 可用 query_leave_balance、query_leave_records、create_leave_pending、confirm_leave_apply、cancel_pending。
             - SalaryAgent：查询工资、薪资、奖金、绩效、社保、公积金或判断薪酬影响。
               action 可用 query_salary、query_payroll、evaluate_salary_impact。
+            用户反馈实发/应发/少发/工资条异常时，优先规划 SalaryAgent 查询工资明细，再按需要规划 PolicyAgent 查询制度依据。
             涉及真实提交请假、补卡、销假等写操作时，只允许规划 pending + confirm 流程，不允许直接提交。
             只输出 JSON，不要 Markdown，不要代码块。
             JSON 格式：
@@ -110,19 +113,39 @@ public class LlmAgentDispatchPlanner {
 
     /**
      * 优先使用 LLM 生成结构化计划；任何异常或非法输出都会自动回退规则 Planner。
+     *
+     * <p>这个方法是 Coordinator 调度子 Agent 前的“计划生成入口”：
+     * 它不会执行 Tool，也不会访问 HR 业务数据，只负责把用户原始问题转换成
+     * {@link AgentDispatchPlan}。后续真正调用 PolicyAgent、AttendanceAgent、
+     * LeaveAgent、SalaryAgent 的动作，由 Coordinator 根据返回的 plan 决定。</p>
+     *
+     * <p>执行顺序可以理解为：
+     * 1. 生成 traceId，用于串联日志和前端观测面板；
+     * 2. 把用户问题、当前用户、当前时间和可用 Agent 列表拼成 prompt；
+     * 3. 调用大模型，让模型只输出固定 JSON 计划；
+     * 4. 解析并校验 JSON，防止模型输出未知 Agent、未知 action 或空 steps；
+     * 5. 如果任何一步失败，则回退到原来的规则 Planner，保证系统仍可用。</p>
      */
     public AgentDispatchPlanningResult plan(String message, AuthenticatedUser user, LocalDateTime now) {
+        // 每次规划生成一个 traceId，便于把 Planner 日志、观测面板和一次用户请求对应起来。
         String traceId = UUID.randomUUID().toString();
+        // rawOutput 保存 LLM 原始输出；如果后面解析失败，也会写入日志，方便排查模型到底返回了什么。
         String rawOutput = null;
         try {
+            // buildUserPrompt 只拼 Planner 需要的上下文，不包含业务数据查询结果，避免 Planner 直接做业务判断。
             rawOutput = llmInvoker.apply(buildUserPrompt(message, user, now));
+            // parseAndValidate 会完成 JSON 解析、字段校验、Agent/action 白名单校验，并转换成内部计划对象。
             AgentDispatchPlan plan = parseAndValidate(rawOutput);
+            // LLM 计划合法时，记录 plannerType=LLM；前端观测面板会展示这个类型和 rawOutput。
             log.info("agent dispatch planner traceId={} plannerType={} rawOutput={} finalPlan={} fallbackReason={}",
                     traceId, AgentPlannerType.LLM, rawOutput, plan, null);
             return new AgentDispatchPlanningResult(plan, AgentPlannerType.LLM, traceId, rawOutput, null);
         } catch (RuntimeException exception) {
+            // 任何模型不可用、输出为空、JSON 不合法、未知 Agent/action 等问题，都统一进入规则兜底。
             String fallbackReason = fallbackReason(exception);
+            // 规则 Planner 是稳定兜底路径，保证 LLM Planner 异常时 Multi-Agent 主流程不会中断。
             AgentDispatchPlan fallbackPlan = rulePlanner.plan(message);
+            // 回退时也记录 rawOutput 和 fallbackReason，方便判断是模型没返回、格式错，还是字段校验失败。
             log.info("agent dispatch planner traceId={} plannerType={} rawOutput={} finalPlan={} fallbackReason={}",
                     traceId, AgentPlannerType.RULE, rawOutput, fallbackPlan, fallbackReason);
             return new AgentDispatchPlanningResult(
@@ -174,12 +197,14 @@ public class LlmAgentDispatchPlanner {
         boolean needSalary = false;
         boolean allowWriteAction = root.path("needConfirm").asBoolean(false);
         Set<String> reasons = new LinkedHashSet<>();
+        List<AgentDispatchStep> dispatchSteps = new ArrayList<>();
 
         for (JsonNode step : steps) {
             String agent = requiredText(step, "agent");
             String action = requiredText(step, "action");
             String reason = optionalText(step, "reason");
             validateStep(agent, action);
+            dispatchSteps.add(new AgentDispatchStep(agent, action, reason));
             if (StringUtils.hasText(reason)) {
                 reasons.add(reason);
             }
@@ -196,7 +221,7 @@ public class LlmAgentDispatchPlanner {
             planReason = "LLM Planner 生成执行计划";
         }
         return new AgentDispatchPlan(
-                needPolicy, needAttendance, needLeave, needSalary, allowWriteAction, planReason
+                needPolicy, needAttendance, needLeave, needSalary, allowWriteAction, planReason, dispatchSteps
         );
     }
 

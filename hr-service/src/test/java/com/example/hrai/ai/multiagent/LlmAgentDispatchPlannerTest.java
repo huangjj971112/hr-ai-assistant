@@ -128,6 +128,39 @@ class LlmAgentDispatchPlannerTest {
     }
 
     @Test
+    void shouldKeepStepOrderFromLlmOutput() {
+        LlmAgentDispatchPlanner planner = plannerWith("""
+                {
+                  "needPlan": true,
+                  "steps": [
+                    {
+                      "agent": "SalaryAgent",
+                      "action": "query_salary",
+                      "reason": "用户反馈实发工资和应发工资不一致，需要先查工资明细"
+                    },
+                    {
+                      "agent": "PolicyAgent",
+                      "action": "query_leave_policy",
+                      "reason": "需要查询薪资扣款制度"
+                    }
+                  ],
+                  "needConfirm": false,
+                  "summary": "需要先查工资明细，再查制度依据"
+                }
+                """);
+
+        AgentDispatchPlanningResult result = planner.plan("我这个月只发了三千，实际应发应该是四千", USER, NOW);
+
+        assertThat(result.plannerType()).isEqualTo(AgentPlannerType.LLM);
+        assertThat(result.plan().steps()).extracting(AgentDispatchStep::agent)
+                .containsExactly("SalaryAgent", "PolicyAgent");
+        assertThat(result.plan().steps()).extracting(AgentDispatchStep::action)
+                .containsExactly("query_salary", "query_leave_policy");
+        assertThat(result.plan().needSalary()).isTrue();
+        assertThat(result.plan().needPolicy()).isTrue();
+    }
+
+    @Test
     void shouldFallbackToRulePlannerWhenLlmOutputIsIllegal() {
         LlmAgentDispatchPlanner planner = plannerWith("这不是 JSON");
 
